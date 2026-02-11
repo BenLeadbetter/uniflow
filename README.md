@@ -26,6 +26,11 @@ Others don't have the key feature set which `uniflow` aims to cover.
 * [reducer](https://crates.io/crates/reducer)
 * [r3bl_redux](https://crates.io/crates/r3bl_redux)
 
+## Name
+
+`uniflow` is an abbreviation of
+[unidirectional data flow](https://en.wikipedia.org/wiki/Unidirectional_data_flow).
+
 ## License
 
 MIT OR Apache-2.0
