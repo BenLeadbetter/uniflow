@@ -1,6 +1,8 @@
-pub trait State: Clone + PartialEq + Send + 'static {}
+use reactive_graph::{prelude::*, signal::RwSignal};
 
-impl<S: Clone + PartialEq + Send + 'static> State for S {}
+pub trait State: Clone + PartialEq + Send + Sync + 'static {}
+
+impl<S: Clone + PartialEq + Send + Sync + 'static> State for S {}
 
 pub trait Action: Send + 'static {}
 
@@ -11,7 +13,7 @@ pub trait Reducer<S: State, A: Action>: Fn(S, A) -> S + 'static {}
 impl<S: State, A: Action, R: Fn(S, A) -> S + 'static> Reducer<S, A> for R {}
 
 pub struct Store<S: State, A: Action, R: Reducer<S, A>> {
-    state: Option<S>,
+    state: RwSignal<S>,
     reducer: R,
     action: std::marker::PhantomData<A>,
 }
@@ -19,18 +21,18 @@ pub struct Store<S: State, A: Action, R: Reducer<S, A>> {
 impl<S: State, A: Action, R: Reducer<S, A>> Store<S, A, R> {
     pub fn new(state: S, reducer: R) -> Self {
         Self {
-            state: Some(state),
+            state: RwSignal::new(state),
             reducer,
             action: Default::default(),
         }
     }
 
     pub fn get(&self) -> S {
-        self.state.clone().unwrap()
+        self.state.get()
     }
 
     pub fn dispatch(&mut self, action: A) {
-        self.state = Some((self.reducer)(self.state.take().unwrap(), action));
+        self.state.set((self.reducer)(self.state.get(), action));
     }
 }
 
