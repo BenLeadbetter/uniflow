@@ -1,5 +1,7 @@
 use reactive_graph::{computed::Memo, prelude::*, signal::RwSignal};
 
+pub mod executor;
+
 pub trait State: Clone + PartialEq + Send + Sync + 'static {}
 
 impl<S: Clone + PartialEq + Send + Sync + 'static> State for S {}
@@ -61,6 +63,14 @@ impl<S: State> Reader<S> {
 mod tests {
     use super::*;
 
+    static EXECUTOR: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+    fn init_executor() {
+        EXECUTOR.get_or_init(|| {
+            executor::init_synchronous_executor().expect("Initialize global sync executor")
+        });
+    }
+
     #[derive(Clone, Default, Debug, PartialEq)]
     struct Item {
         what: String,
@@ -92,12 +102,14 @@ mod tests {
 
     #[test]
     fn get_returns_state() {
+        init_executor();
         let store = Store::new(ToDo::default(), reducer);
         assert_eq!(store.get(), ToDo::default());
     }
 
     #[test]
     fn dispatching_an_action_mutates_the_state() {
+        init_executor();
         let mut store = Store::new(
             ToDo {
                 items: vec![Item {
@@ -113,6 +125,7 @@ mod tests {
 
     #[test]
     fn reader_reads_current_value_from_state() {
+        init_executor();
         let mut store = Store::new(
             ToDo {
                 items: vec![Item {
