@@ -1,4 +1,4 @@
-use reactive_graph::{prelude::*, signal::RwSignal};
+use reactive_graph::{computed::Memo, prelude::*, signal::RwSignal};
 
 pub trait State: Clone + PartialEq + Send + Sync + 'static {}
 
@@ -34,6 +34,27 @@ impl<S: State, A: Action, R: Reducer<S, A>> Store<S, A, R> {
     pub fn dispatch(&mut self, action: A) {
         self.state.set((self.reducer)(self.state.get(), action));
     }
+
+    pub fn reader<T, F>(&self, selector: F) -> Reader<T>
+    where
+        F: Fn(&S) -> T + Send + Sync + 'static,
+        T: State,
+    {
+        let state = self.state;
+        Reader {
+            memo: Memo::new(move |_| selector(&state.get())),
+        }
+    }
+}
+
+pub struct Reader<S: State> {
+    memo: Memo<S>,
+}
+
+impl<S: State> Reader<S> {
+    pub fn get(&self) -> S {
+        self.memo.get()
+    }
 }
 
 #[cfg(test)]
@@ -41,19 +62,29 @@ mod tests {
     use super::*;
 
     #[derive(Clone, Default, Debug, PartialEq)]
-    struct State {
-        counter: i32,
+    struct Item {
+        what: String,
+        done: bool,
+    }
+
+    #[derive(Clone, Default, Debug, PartialEq)]
+    struct ToDo {
+        items: std::vec::Vec<Item>,
     }
 
     enum Action {
-        Increment,
+        Add(String),
+        Done(usize),
     }
 
-    fn reducer(mut state: State, action: Action) -> State {
+    fn reducer(mut state: ToDo, action: Action) -> ToDo {
         use Action::*;
         match action {
-            Increment => {
-                state.counter += 1;
+            Add(what) => {
+                state.items.push(Item { what, done: false });
+            }
+            Done(index) => {
+                state.items[index].done = true;
             }
         }
         state
@@ -61,14 +92,51 @@ mod tests {
 
     #[test]
     fn get_returns_state() {
-        let store = Store::new(State::default(), reducer);
-        assert_eq!(store.get(), State::default());
+        let store = Store::new(ToDo::default(), reducer);
+        assert_eq!(store.get(), ToDo::default());
     }
 
     #[test]
     fn dispatching_an_action_mutates_the_state() {
-        let mut store = Store::new(State::default(), reducer);
-        store.dispatch(Action::Increment);
-        assert_eq!(store.get(), State { counter: 1 });
+        let mut store = Store::new(
+            ToDo {
+                items: vec![Item {
+                    what: "Washing up".into(),
+                    done: false,
+                }],
+            },
+            reducer,
+        );
+        store.dispatch(Action::Done(0));
+        assert!(store.get().items[0].done);
+    }
+
+    #[test]
+    fn reader_reads_current_value_from_state() {
+        let mut store = Store::new(
+            ToDo {
+                items: vec![Item {
+                    what: "Washing up".into(),
+                    done: false,
+                }],
+            },
+            reducer,
+        );
+        let reader = store.reader(|state| state.items[0].clone());
+        assert_eq!(
+            reader.get(),
+            Item {
+                what: "Washing up".into(),
+                done: false,
+            }
+        );
+        store.dispatch(Action::Done(0));
+        assert_eq!(
+            reader.get(),
+            Item {
+                what: "Washing up".into(),
+                done: true,
+            }
+        );
     }
 }
