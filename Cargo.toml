@@ -8,4 +8,4 @@ edition = "2024"
 reactive_graph = { version = "0.2.12", features = ["effects"] }
 any_spawner = { version = "0.3", features = ["tokio"] }
 futures = "0.3"
-tokio = { version = "1.49.0", features = ["sync", "rt"] }
+tokio = { version = "1.49.0", features = ["sync", "rt", "rt-multi-thread", "macros"] }

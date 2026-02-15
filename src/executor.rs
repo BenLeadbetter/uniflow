@@ -1,17 +1,33 @@
+use futures::executor::LocalPool;
+use futures::task::LocalSpawnExt;
+use std::cell::RefCell;
+
+thread_local! {
+    static LOCAL_POOL: RefCell<LocalPool> = RefCell::new(LocalPool::new());
+}
+
 pub struct SynchronousExecutor;
 
 impl any_spawner::CustomExecutor for SynchronousExecutor {
     fn spawn(&self, fut: any_spawner::PinnedFuture<()>) {
-        futures::executor::block_on(fut);
+        self.spawn_local(fut);
     }
 
     fn spawn_local(&self, fut: any_spawner::PinnedLocalFuture<()>) {
-        futures::executor::block_on(fut);
+        LOCAL_POOL.with(|pool| {
+            pool.borrow().spawner().spawn_local(fut).unwrap();
+        });
     }
 
     fn poll_local(&self) {
-        // No-op: futures are executed synchronously when spawned
+        LOCAL_POOL.with(|pool| {
+            pool.borrow_mut().run_until_stalled();
+        });
     }
+}
+
+pub fn tick() {
+    any_spawner::Executor::poll_local();
 }
 
 pub fn init_synchronous_executor() -> Result<(), any_spawner::ExecutorError> {

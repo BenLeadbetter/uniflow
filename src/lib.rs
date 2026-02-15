@@ -1,4 +1,4 @@
-use reactive_graph::{computed::Memo, prelude::*, signal::RwSignal};
+use reactive_graph::{computed::Memo, effect::Effect, owner::Owner, prelude::*, signal::RwSignal};
 
 pub mod executor;
 
@@ -45,17 +45,33 @@ impl<S: State, A: Action, R: Reducer<S, A>> Store<S, A, R> {
         let state = self.state;
         Reader {
             memo: Memo::new(move |_| selector(&state.get())),
+            owner: Owner::new(),
         }
     }
 }
 
 pub struct Reader<S: State> {
     memo: Memo<S>,
+    owner: Owner,
 }
 
 impl<S: State> Reader<S> {
     pub fn get(&self) -> S {
         self.memo.get()
+    }
+
+    pub fn watch<F>(&self, callback: F)
+    where
+        F: Fn(&S) + Send + Sync + 'static,
+    {
+        let memo = self.memo;
+        self.owner.with(|| {
+            Effect::watch(
+                move || memo.get(),
+                move |value, _, _| callback(value),
+                false,
+            );
+        });
     }
 }
 
@@ -150,6 +166,46 @@ mod tests {
                 what: "Washing up".into(),
                 done: true,
             }
+        );
+    }
+
+    #[test]
+    fn watch_calls_callback_on_state_change() {
+        use std::sync::{Arc, RwLock};
+
+        init_executor();
+
+        let mut store = Store::new(
+            ToDo {
+                items: vec![Item {
+                    what: "Washing up".into(),
+                    done: false,
+                }],
+            },
+            reducer,
+        );
+
+        let received: Arc<RwLock<Option<Item>>> = Arc::new(RwLock::new(None));
+        let received_clone = received.clone();
+
+        let reader = store.reader(|state| state.items[0].clone());
+        reader.watch(move |item| {
+            *received_clone.write().unwrap() = Some(item.clone());
+        });
+
+        // Effect::watch with immediate=false doesn't run on first tick
+        executor::tick();
+        assert!(received.read().unwrap().is_none());
+
+        store.dispatch(Action::Done(0));
+        executor::tick();
+
+        assert_eq!(
+            *received.read().unwrap(),
+            Some(Item {
+                what: "Washing up".into(),
+                done: true,
+            })
         );
     }
 }
