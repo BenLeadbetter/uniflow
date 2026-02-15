@@ -1,4 +1,7 @@
-use reactive_graph::{computed::Memo, effect::Effect, owner::Owner, prelude::*, signal::RwSignal};
+use reactive_graph::{
+    computed::Memo, effect::Effect, owner::Owner, prelude::*, signal::RwSignal,
+    traits::Get as RgGet,
+};
 
 pub mod executor;
 
@@ -17,7 +20,18 @@ impl<S: State, A: Action, R: Fn(S, A) -> S + 'static> Reducer<S, A> for R {}
 pub struct Store<S: State, A: Action, R: Reducer<S, A>> {
     state: RwSignal<S>,
     reducer: R,
+    owner: Owner,
     action: std::marker::PhantomData<A>,
+}
+
+pub trait Get<S: State> {
+    fn get(&self) -> S;
+}
+
+pub trait Watch<S: State> {
+    fn watch<F>(&self, callback: F)
+    where
+        F: Fn(&S) + Send + Sync + 'static;
 }
 
 impl<S: State, A: Action, R: Reducer<S, A>> Store<S, A, R> {
@@ -25,12 +39,9 @@ impl<S: State, A: Action, R: Reducer<S, A>> Store<S, A, R> {
         Self {
             state: RwSignal::new(state),
             reducer,
+            owner: Owner::new(),
             action: Default::default(),
         }
-    }
-
-    pub fn get(&self) -> S {
-        self.state.get()
     }
 
     pub fn dispatch(&mut self, action: A) {
@@ -50,17 +61,35 @@ impl<S: State, A: Action, R: Reducer<S, A>> Store<S, A, R> {
     }
 }
 
+impl<S: State, A: Action, R: Reducer<S, A>> Get<S> for Store<S, A, R> {
+    fn get(&self) -> S {
+        self.state.get()
+    }
+}
+
+impl<S: State, A: Action, R: Reducer<S, A>> Watch<S> for Store<S, A, R> {
+    fn watch<F>(&self, callback: F)
+    where
+        F: Fn(&S) + Send + Sync + 'static,
+    {
+        let state = self.state;
+        self.owner.with(|| {
+            Effect::watch(
+                move || state.get(),
+                move |value, _, _| callback(value),
+                false,
+            );
+        });
+    }
+}
+
 pub struct Reader<S: State> {
     memo: Memo<S>,
     owner: Owner,
 }
 
-impl<S: State> Reader<S> {
-    pub fn get(&self) -> S {
-        self.memo.get()
-    }
-
-    pub fn watch<F>(&self, callback: F)
+impl<S: State> Watch<S> for Reader<S> {
+    fn watch<F>(&self, callback: F)
     where
         F: Fn(&S) + Send + Sync + 'static,
     {
@@ -72,6 +101,12 @@ impl<S: State> Reader<S> {
                 false,
             );
         });
+    }
+}
+
+impl<S: State> Get<S> for Reader<S> {
+    fn get(&self) -> S {
+        self.memo.get()
     }
 }
 
@@ -140,6 +175,46 @@ mod tests {
     }
 
     #[test]
+    fn watch_store_calls_callback_on_state_change() {
+        use std::sync::{Arc, RwLock};
+
+        init_executor();
+
+        let mut store = Store::new(
+            ToDo {
+                items: vec![Item {
+                    what: "Washing up".into(),
+                    done: false,
+                }],
+            },
+            reducer,
+        );
+
+        let received: Arc<RwLock<Option<ToDo>>> = Arc::new(RwLock::new(None));
+        let received_clone = received.clone();
+
+        store.watch(move |todo| {
+            *received_clone.write().unwrap() = Some(todo.clone());
+        });
+
+        executor::tick();
+        assert!(received.read().unwrap().is_none());
+
+        store.dispatch(Action::Done(0));
+        executor::tick();
+
+        assert_eq!(
+            *received.read().unwrap(),
+            Some(ToDo {
+                items: vec![Item {
+                    what: "Washing up".into(),
+                    done: true,
+                }],
+            })
+        );
+    }
+
+    #[test]
     fn reader_reads_current_value_from_state() {
         init_executor();
         let mut store = Store::new(
@@ -170,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn watch_calls_callback_on_state_change() {
+    fn watch_reader_calls_callback_on_state_change() {
         use std::sync::{Arc, RwLock};
 
         init_executor();
@@ -193,7 +268,6 @@ mod tests {
             *received_clone.write().unwrap() = Some(item.clone());
         });
 
-        // Effect::watch with immediate=false doesn't run on first tick
         executor::tick();
         assert!(received.read().unwrap().is_none());
 
