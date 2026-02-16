@@ -36,10 +36,12 @@ pub trait Watch<S: State> {
 
 impl<S: State, A: Action, R: Reducer<S, A>> Store<S, A, R> {
     pub fn new(state: S, reducer: R) -> Self {
+        let owner = Owner::new();
+        let state = owner.with(|| RwSignal::new(state));
         Self {
-            state: RwSignal::new(state),
+            state,
             reducer,
-            owner: Owner::new(),
+            owner,
             action: Default::default(),
         }
     }
@@ -54,10 +56,11 @@ impl<S: State, A: Action, R: Reducer<S, A>> Store<S, A, R> {
         T: State,
     {
         let state = self.state;
-        Reader {
-            memo: Memo::new(move |_| selector(&state.get())),
-            owner: Owner::new(),
-        }
+        self.owner.with(|| {
+            let owner = Owner::new(); // Child of self.owner
+            let memo = owner.with(|| Memo::new(move |_| selector(&state.get())));
+            Reader { memo, owner }
+        })
     }
 }
 
