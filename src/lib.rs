@@ -21,6 +21,7 @@ pub struct Store<S: State, A: Action, R: Reducer<S, A>> {
     state: RwSignal<S>,
     reducer: R,
     owner: Owner,
+    watch_owner: Owner,
     action: std::marker::PhantomData<A>,
 }
 
@@ -32,16 +33,22 @@ pub trait Watch<S: State> {
     fn watch<F>(&self, callback: F)
     where
         F: Fn(&S) + Send + Sync + 'static;
+    fn disconnect(&self);
 }
 
 impl<S: State, A: Action, R: Reducer<S, A>> Store<S, A, R> {
     pub fn new(state: S, reducer: R) -> Self {
         let owner = Owner::new();
-        let state = owner.with(|| RwSignal::new(state));
+        let (state, watch_owner) = owner.with(|| {
+            let state = RwSignal::new(state);
+            let watch_owner = Owner::new(); // Child of owner
+            (state, watch_owner)
+        });
         Self {
             state,
             reducer,
             owner,
+            watch_owner,
             action: Default::default(),
         }
     }
@@ -58,8 +65,16 @@ impl<S: State, A: Action, R: Reducer<S, A>> Store<S, A, R> {
         let state = self.state;
         self.owner.with(|| {
             let owner = Owner::new(); // Child of self.owner
-            let memo = owner.with(|| Memo::new(move |_| selector(&state.get())));
-            Reader { memo, owner }
+            let (memo, watch_owner) = owner.with(|| {
+                let memo = Memo::new(move |_| selector(&state.get()));
+                let watch_owner = Owner::new(); // Child of reader's owner
+                (memo, watch_owner)
+            });
+            Reader {
+                memo,
+                owner,
+                watch_owner,
+            }
         })
     }
 }
@@ -76,7 +91,7 @@ impl<S: State, A: Action, R: Reducer<S, A>> Watch<S> for Store<S, A, R> {
         F: Fn(&S) + Send + Sync + 'static,
     {
         let state = self.state;
-        self.owner.with(|| {
+        self.watch_owner.with(|| {
             Effect::watch(
                 move || state.get(),
                 move |value, _, _| callback(value),
@@ -84,11 +99,17 @@ impl<S: State, A: Action, R: Reducer<S, A>> Watch<S> for Store<S, A, R> {
             );
         });
     }
+
+    fn disconnect(&self) {
+        self.watch_owner.cleanup();
+    }
 }
 
 pub struct Reader<S: State> {
     memo: Memo<S>,
+    #[allow(dead_code)]
     owner: Owner,
+    watch_owner: Owner,
 }
 
 impl<S: State> Watch<S> for Reader<S> {
@@ -97,13 +118,17 @@ impl<S: State> Watch<S> for Reader<S> {
         F: Fn(&S) + Send + Sync + 'static,
     {
         let memo = self.memo;
-        self.owner.with(|| {
+        self.watch_owner.with(|| {
             Effect::watch(
                 move || memo.get(),
                 move |value, _, _| callback(value),
                 false,
             );
         });
+    }
+
+    fn disconnect(&self) {
+        self.watch_owner.cleanup();
     }
 }
 
@@ -284,5 +309,135 @@ mod tests {
                 done: true,
             })
         );
+    }
+
+    #[test]
+    fn disconnect_store_stops_watch_callbacks() {
+        use std::sync::{Arc, RwLock};
+
+        init_executor();
+
+        let mut store = Store::new(
+            ToDo {
+                items: vec![Item {
+                    what: "Washing up".into(),
+                    done: false,
+                }],
+            },
+            reducer,
+        );
+
+        let call_count: Arc<RwLock<usize>> = Arc::new(RwLock::new(0));
+        let call_count_clone = call_count.clone();
+
+        store.watch(move |_| {
+            *call_count_clone.write().unwrap() += 1;
+        });
+
+        executor::tick();
+        assert_eq!(*call_count.read().unwrap(), 0);
+
+        store.dispatch(Action::Done(0));
+        executor::tick();
+        assert_eq!(*call_count.read().unwrap(), 1);
+
+        store.disconnect();
+
+        store.dispatch(Action::Add("New item".into()));
+        executor::tick();
+        assert_eq!(*call_count.read().unwrap(), 1); // Still 1, not 2
+    }
+
+    #[test]
+    fn disconnect_reader_stops_watch_callbacks() {
+        use std::sync::{Arc, RwLock};
+
+        init_executor();
+
+        let mut store = Store::new(
+            ToDo {
+                items: vec![Item {
+                    what: "Washing up".into(),
+                    done: false,
+                }],
+            },
+            reducer,
+        );
+
+        let call_count: Arc<RwLock<usize>> = Arc::new(RwLock::new(0));
+        let call_count_clone = call_count.clone();
+
+        let reader = store.reader(|state| state.items[0].clone());
+        reader.watch(move |_| {
+            *call_count_clone.write().unwrap() += 1;
+        });
+
+        executor::tick();
+        assert_eq!(*call_count.read().unwrap(), 0);
+
+        store.dispatch(Action::Done(0));
+        executor::tick();
+        assert_eq!(*call_count.read().unwrap(), 1);
+
+        reader.disconnect();
+
+        store.dispatch(Action::Add("New item".into()));
+        executor::tick();
+        assert_eq!(*call_count.read().unwrap(), 1); // Still 1, not 2
+
+        assert_eq!(
+            reader.get(),
+            Item {
+                what: "Washing up".into(),
+                done: true,
+            }
+        );
+    }
+
+    #[test]
+    fn can_rewatch_after_disconnect() {
+        use std::sync::{Arc, RwLock};
+
+        init_executor();
+
+        let mut store = Store::new(
+            ToDo {
+                items: vec![Item {
+                    what: "Washing up".into(),
+                    done: false,
+                }],
+            },
+            reducer,
+        );
+
+        let call_count: Arc<RwLock<usize>> = Arc::new(RwLock::new(0));
+        let call_count_clone = call_count.clone();
+
+        store.watch({
+            let call_count = call_count.clone();
+            move |_| {
+                *call_count.write().unwrap() += 1;
+            }
+        });
+
+        executor::tick();
+        assert_eq!(*call_count.read().unwrap(), 0);
+
+        store.dispatch(Action::Done(0));
+        executor::tick();
+        assert_eq!(*call_count.read().unwrap(), 1);
+
+        store.disconnect();
+
+        store.watch(move |_| {
+            *call_count_clone.write().unwrap() += 1;
+        });
+
+        executor::tick();
+        assert_eq!(*call_count.read().unwrap(), 1);
+
+        store.dispatch(Action::Add("New item".into()));
+        executor::tick();
+        assert_eq!(*call_count.read().unwrap(), 2);
     }
 }
