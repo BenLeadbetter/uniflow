@@ -41,7 +41,7 @@ impl<S: State, A: Action, R: Reducer<S, A>> Store<S, A, R> {
         let owner = Owner::new();
         let (state, watch_owner) = owner.with(|| {
             let state = RwSignal::new(state);
-            let watch_owner = Owner::new(); // Child of owner
+            let watch_owner = Owner::new();
             (state, watch_owner)
         });
         Self {
@@ -64,10 +64,10 @@ impl<S: State, A: Action, R: Reducer<S, A>> Store<S, A, R> {
     {
         let state = self.state;
         self.owner.with(|| {
-            let owner = Owner::new(); // Child of self.owner
+            let owner = Owner::new();
             let (memo, watch_owner) = owner.with(|| {
                 let memo = Memo::new(move |_| selector(&state.get()));
-                let watch_owner = Owner::new(); // Child of reader's owner
+                let watch_owner = Owner::new();
                 (memo, watch_owner)
             });
             Reader {
