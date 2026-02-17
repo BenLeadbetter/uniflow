@@ -7,7 +7,7 @@ Small, incremental steps toward a working library. Each step should compile and 
 ### 1. Project Setup
 Add dependencies to `Cargo.toml`:
 - `reactive_graph` for reactive primitives
-- `tokio` with sync and rt features
+- `any_spawner` for pluggable async execution
 
 Verify the project compiles with dependencies.
 
@@ -45,26 +45,28 @@ Implement real `Effect<A>`:
 
 ### 7. Context Type
 Implement `Context<A>` for effect dispatch:
-- Holds `mpsc::UnboundedSender<A>` internally
-- `ctx.dispatch(action)` sends action to store
+- Holds `futures::channel::mpsc::UnboundedSender<A>` internally
+- `ctx.dispatch(action)` sends action to store (sync, non-blocking)
 - Clone-able for use across await points
 
-### 8. Async Channel Dispatch
+### 8. Channel-Based Dispatch
 Convert dispatch to channel-based:
-- Store holds `mpsc::UnboundedSender<A>`
-- `dispatch()` sends to channel (non-blocking, thread-safe)
-- Prepare for separate processing task
+- Store holds `futures::channel::mpsc::UnboundedSender<A>` (runtime-agnostic)
+- `dispatch(&self, action)` sends to channel synchronously (non-blocking, thread-safe)
+- Safe to call from any thread, including real-time audio threads
 
-### 9. Reducer Task
-Implement the main loop pattern:
-- `Store::run()` returns a `Future` that processes the action queue
+### 9. Internal Reducer Task
+Spawn the reducer task internally in `Store::new()`:
+- Receiver task is spawned via `any_spawner::Executor::spawn()`
 - Receives actions sequentially from channel
 - Applies reducer and updates signal
-- User spawns this task on their runtime
+- `shutdown()` method closes channel, allowing reducer task to drain and exit
+- Works with any executor: tokio in production, synchronous executor for testing
+- Future: `new_with_task()` variant for users needing manual task management
 
 ### 10. Effect Spawning
 Complete the async cycle:
-- After reducer returns `Some(effect)`, spawn it via `tokio::spawn`
+- After reducer returns `Some(effect)`, spawn it via `any_spawner`
 - Pass `Context` to effect so it can dispatch new actions
 - Effects run concurrently while reducer processes sequentially
 
@@ -89,10 +91,11 @@ Features for future consideration, roughly ordered by utility:
 - `reader.zoom(lens)` for nested access
 - Type-safe path into deep state structures
 
-### Alternative Runtimes
-- `EventLoop` trait abstracting the runtime
-- Implementations for: tokio (default), async-std, manual/test
-- Qt integration for desktop apps
+### Custom Scheduler Integration
+- Expose `any_spawner` API for injecting custom executors
+- Document how apps can use `any_spawner::Executor::init_custom_executor()`
+- Provide utilities for common patterns (test executor, single-threaded)
+- Leverage Leptos ecosystem compatibility
 
 ### Cursor (Bidirectional Access)
 - Read-write access for form bindings
