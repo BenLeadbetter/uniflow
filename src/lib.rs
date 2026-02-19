@@ -65,6 +65,9 @@ impl<S: State, A: Action> Store<S, A> {
     }
 
     pub fn dispatch(&mut self, action: A) {
+        // TODO: handle the error states here:
+        // * the channel is full
+        // * the channel is closed
         let _ = self.sender.try_send(action);
     }
 
