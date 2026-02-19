@@ -1,3 +1,5 @@
+use futures::StreamExt;
+use futures::channel::mpsc::{Sender, channel};
 use reactive_graph::{
     computed::Memo, effect::Effect, owner::Owner, prelude::*, signal::RwSignal,
     traits::Get as RgGet,
@@ -13,16 +15,15 @@ pub trait Action: Send + 'static {}
 
 impl<A: Send + 'static> Action for A {}
 
-pub trait Reducer<S: State, A: Action>: Fn(S, A) -> S + 'static {}
+pub trait Reducer<S: State, A: Action>: Fn(S, A) -> S + Send + 'static {}
 
-impl<S: State, A: Action, R: Fn(S, A) -> S + 'static> Reducer<S, A> for R {}
+impl<S: State, A: Action, R: Fn(S, A) -> S + Send + 'static> Reducer<S, A> for R {}
 
-pub struct Store<S: State, A: Action, R: Reducer<S, A>> {
+pub struct Store<S: State, A: Action> {
     state: RwSignal<S>,
-    reducer: R,
     owner: Owner,
     watch_owner: Owner,
-    action: std::marker::PhantomData<A>,
+    sender: Sender<A>,
 }
 
 pub trait Get<S: State> {
@@ -36,25 +37,39 @@ pub trait Watch<S: State> {
     fn disconnect(&self);
 }
 
-impl<S: State, A: Action, R: Reducer<S, A>> Store<S, A, R> {
-    pub fn new(state: S, reducer: R) -> Self {
+impl<S: State, A: Action> Store<S, A> {
+    pub fn new_with_capacity<R: Reducer<S, A>>(state: S, reducer: R, capacity: usize) -> Self {
         let owner = Owner::new();
         let (state, watch_owner) = owner.with(|| {
             let state = RwSignal::new(state);
             let watch_owner = Owner::new();
             (state, watch_owner)
         });
+        let (sender, mut receiver) = channel(capacity);
+        let reducer_state = state;
+        any_spawner::Executor::spawn(async move {
+            while let Some(action) = receiver.next().await {
+                reducer_state.set((reducer)(reducer_state.get(), action));
+            }
+        });
         Self {
             state,
-            reducer,
             owner,
             watch_owner,
-            action: Default::default(),
+            sender,
         }
     }
 
+    pub fn new<R: Reducer<S, A>>(state: S, reducer: R) -> Self {
+        Self::new_with_capacity(state, reducer, 128)
+    }
+
     pub fn dispatch(&mut self, action: A) {
-        self.state.set((self.reducer)(self.state.get(), action));
+        let _ = self.sender.try_send(action);
+    }
+
+    pub fn shutdown(&mut self) {
+        self.sender.close_channel();
     }
 
     pub fn reader<T, F>(&self, selector: F) -> Reader<T>
@@ -79,13 +94,13 @@ impl<S: State, A: Action, R: Reducer<S, A>> Store<S, A, R> {
     }
 }
 
-impl<S: State, A: Action, R: Reducer<S, A>> Get<S> for Store<S, A, R> {
+impl<S: State, A: Action> Get<S> for Store<S, A> {
     fn get(&self) -> S {
         self.state.get()
     }
 }
 
-impl<S: State, A: Action, R: Reducer<S, A>> Watch<S> for Store<S, A, R> {
+impl<S: State, A: Action> Watch<S> for Store<S, A> {
     fn watch<F>(&self, callback: F)
     where
         F: Fn(&S) + Send + Sync + 'static,
@@ -199,6 +214,7 @@ mod tests {
             reducer,
         );
         store.dispatch(Action::Done(0));
+        executor::tick();
         assert!(store.get().items[0].done);
     }
 
@@ -263,6 +279,7 @@ mod tests {
             }
         );
         store.dispatch(Action::Done(0));
+        executor::tick();
         assert_eq!(
             reader.get(),
             Item {
