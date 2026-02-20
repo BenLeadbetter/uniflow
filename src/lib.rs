@@ -210,7 +210,7 @@ impl<S: State, A: Action, D: Deps> Watch<S> for Store<S, A, D> {
                 },
                 move |value, _, _| {
                     if let Some(value) = value {
-                        callback(&value);
+                        callback(value);
                     }
                 },
                 false,
@@ -245,7 +245,7 @@ impl<S: State> Watch<S> for Reader<S> {
                 },
                 move |value, _, _| {
                     if let Some(value) = value {
-                        callback(&value);
+                        callback(value);
                     }
                 },
                 false,
