@@ -87,15 +87,37 @@ fn reducer(state: AppState, action: Action) -> (AppState, Option<Effect<Action>>
 }
 ```
 
-### Effects
+### Dependency Injection
 
-Async operations that can dispatch new actions via a `Context`:
+Dependencies are injected into the store at creation time and made available to effects via `Context`. Any `Clone + Send + Sync + 'static` type satisfies the `Deps` trait (blanket impl). `()` is the default "no deps" case.
 
 ```rust
-pub struct Context<Action> { /* action sender */ }
+#[derive(Clone)]
+struct AppDeps {
+    api_client: ApiClient,
+    db: Database,
+}
 
-impl<Action> Context<Action> {
-    pub fn dispatch(&self, action: Action);
+let store = Store::new_with_deps(initial_state, reducer, AppDeps { api_client, db });
+```
+
+### Effects
+
+Async operations that can dispatch new actions via a `Context`. Effects are returned from the reducer alongside the new state:
+
+```rust
+pub struct Context<A, D = ()> { /* action sender + deps */ }
+
+impl<A: Action, D: Deps> Context<A, D> {
+    pub fn dispatch(&self, action: A);
+    pub fn deps(&self) -> &D;
+}
+
+pub struct Effect<A, D = ()> { /* async closure */ }
+
+impl<A: Action, D: Deps> Effect<A, D> {
+    pub fn new(f: impl FnOnce(Context<A, D>) -> impl Future<Output = ()>) -> Self;
+    pub fn none() -> Self;
 }
 ```
 

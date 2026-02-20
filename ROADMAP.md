@@ -37,16 +37,18 @@ Implement derived state via `reader()`:
 - `store.reader(|state| state.field)` creates cached derived view
 - Reader updates automatically when selected state changes
 
-### 6. Effect Type
-Implement real `Effect<A>`:
-- Wraps `Box<dyn FnOnce(Context<A>) -> BoxFuture<'static, ()> + Send>`
+### 6. Effect Type ✅
+Implement real `Effect<A, D>`:
+- Wraps `Box<dyn FnOnce(Context<A, D>) -> BoxFuture<'static, ()> + Send>`
 - `Effect::new(|ctx| async move { ... })` constructor
+- `Effect::none()` for no-op effects
 - Captures async work that can dispatch actions
 
-### 7. Context Type
-Implement `Context<A>` for effect dispatch:
-- Holds `futures::channel::mpsc::UnboundedSender<A>` internally
+### 7. Context Type ✅
+Implement `Context<A, D>` for effect dispatch:
+- Holds `Sender<A>` and injected `D: Deps` internally
 - `ctx.dispatch(action)` sends action to store (sync, non-blocking)
+- `ctx.deps()` accessor for injected dependencies
 - Clone-able for use across await points
 
 ### 8. Channel-Based Dispatch
@@ -64,11 +66,12 @@ Spawn the reducer task internally in `Store::new()`:
 - Works with any executor: tokio in production, synchronous executor for testing
 - Future: `new_with_task()` variant for users needing manual task management
 
-### 10. Effect Spawning
+### 10. Effect Spawning ✅
 Complete the async cycle:
-- After reducer returns `Some(effect)`, spawn it via `any_spawner`
-- Pass `Context` to effect so it can dispatch new actions
+- After reducer returns effect, spawn it via `any_spawner`
+- Pass `Context` (with sender + deps) to effect so it can dispatch new actions
 - Effects run concurrently while reducer processes sequentially
+- `Store::new_with_deps()` and `Store::new_with_deps_and_capacity()` constructors for DI
 
 ---
 

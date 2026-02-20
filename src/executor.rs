@@ -1,9 +1,10 @@
-use futures::executor::LocalPool;
+use futures::executor::{LocalPool, LocalSpawner};
 use futures::task::LocalSpawnExt;
 use std::cell::RefCell;
 
 thread_local! {
     static LOCAL_POOL: RefCell<LocalPool> = RefCell::new(LocalPool::new());
+    static LOCAL_SPAWNER: LocalSpawner = LOCAL_POOL.with(|pool| pool.borrow().spawner());
 }
 
 pub struct SynchronousExecutor;
@@ -14,8 +15,8 @@ impl any_spawner::CustomExecutor for SynchronousExecutor {
     }
 
     fn spawn_local(&self, fut: any_spawner::PinnedLocalFuture<()>) {
-        LOCAL_POOL.with(|pool| {
-            pool.borrow().spawner().spawn_local(fut).unwrap();
+        LOCAL_SPAWNER.with(|spawner| {
+            spawner.spawn_local(fut).unwrap();
         });
     }
 
