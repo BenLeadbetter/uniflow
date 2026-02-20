@@ -1,7 +1,9 @@
 use futures::StreamExt;
 use futures::channel::mpsc::{Sender, TrySendError, channel};
 use futures::future::BoxFuture;
-use reactive_graph::{computed::Memo, owner::Owner, prelude::*, signal::RwSignal};
+use reactive_graph::{
+    computed::Memo, owner::Owner, prelude::*, signal::RwSignal, traits::GetUntracked,
+};
 use std::marker::PhantomData;
 
 #[cfg(test)]
@@ -137,8 +139,7 @@ impl<S: State, A: Action, D: Deps> Store<S, A, D> {
         let effect_sender = sender.clone();
         any_spawner::Executor::spawn(async move {
             while let Some(action) = receiver.next().await {
-                use reactive_graph::traits::Get;
-                let (new_state, effect) = (reducer)(reducer_state.get(), action);
+                let (new_state, effect) = (reducer)(reducer_state.get_untracked(), action);
                 reducer_state.set(new_state);
                 let ctx = Context {
                     sender: effect_sender.clone(),
@@ -194,8 +195,7 @@ impl<S: State, A: Action, D: Deps> Store<S, A, D> {
 
 impl<S: State, A: Action, D: Deps> Get<S> for Store<S, A, D> {
     fn get(&self) -> S {
-        use reactive_graph::traits::Get;
-        self.state.get()
+        self.state.get_untracked()
     }
 }
 
@@ -250,8 +250,7 @@ impl<S: State> Watch<S> for Reader<S> {
 
 impl<S: State> Get<S> for Reader<S> {
     fn get(&self) -> S {
-        use reactive_graph::traits::Get;
-        self.memo.get()
+        self.memo.get_untracked()
     }
 }
 
