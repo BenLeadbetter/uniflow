@@ -4,7 +4,10 @@ use futures::future::BoxFuture;
 use reactive_graph::{computed::Memo, owner::Owner, prelude::*, signal::RwSignal};
 use std::marker::PhantomData;
 
-pub mod executor;
+#[cfg(test)]
+mod executor;
+
+pub use any_spawner;
 
 pub trait State: Clone + PartialEq + Send + Sync + 'static {}
 
@@ -272,7 +275,7 @@ mod tests {
 
     fn init_executor() {
         EXECUTOR.get_or_init(|| {
-            executor::init_synchronous_executor().expect("Initialize global sync executor")
+            executor::init_test_executer().expect("Initialize global sync executor")
         });
     }
 

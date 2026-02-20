@@ -31,10 +31,6 @@ pub fn tick() {
     any_spawner::Executor::poll_local();
 }
 
-pub fn init_synchronous_executor() -> Result<(), any_spawner::ExecutorError> {
+pub fn init_test_executer() -> Result<(), any_spawner::ExecutorError> {
     any_spawner::Executor::init_custom_executor(SynchronousExecutor)
-}
-
-pub fn init_tokio_executor() -> Result<(), any_spawner::ExecutorError> {
-    any_spawner::Executor::init_tokio()
 }

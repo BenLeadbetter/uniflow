@@ -6,14 +6,19 @@ from the Leptos project.
 
 ## Overview
 
-Uniflow provides a predictable state container following the Redux/Elm architecture pattern:
+Uniflow provides a predictable state container following the Redux/Elm architecture pattern.
+The design of the API is loosely inspired by the excellent 
+[lager C++ project](https://github.com/arximboldi/lager).
 
 - **Actions** as enums representing events
 - **Pure reducers** that return new state plus optional effects
 - **Effects** for async operations that can dispatch new actions
 - **Thread-safe dispatch** via tokio integration
+- **Value Semantics** state and actions are treated as simple values - no references
 
 See [DESIGN.md](./DESIGN.md) for architecture details.
+
+## Quick Start
 
 ## Alternatives
 
