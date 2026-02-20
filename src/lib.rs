@@ -2,7 +2,11 @@ use futures::StreamExt;
 use futures::channel::mpsc::{Sender, TrySendError, channel};
 use futures::future::BoxFuture;
 use reactive_graph::{
-    computed::Memo, owner::Owner, prelude::*, signal::RwSignal, traits::GetUntracked,
+    computed::ArcMemo,
+    owner::Owner,
+    prelude::*,
+    signal::ArcRwSignal,
+    traits::{GetUntracked, IsDisposed},
 };
 use std::marker::PhantomData;
 
@@ -91,8 +95,7 @@ impl<A: Action, D: Deps> Effect<A, D> {
 }
 
 pub struct Store<S: State, A: Action, D: Deps = ()> {
-    state: RwSignal<S>,
-    owner: Owner,
+    state: ArcRwSignal<S>,
     watch_owner: Owner,
     sender: Sender<A>,
     _deps: PhantomData<D>,
@@ -128,18 +131,20 @@ impl<S: State, A: Action, D: Deps> Store<S, A, D> {
         deps: D,
         capacity: usize,
     ) -> Self {
-        let owner = Owner::new();
-        let (state, watch_owner) = owner.with(|| {
-            let state = RwSignal::new(state);
-            let watch_owner = Owner::new();
-            (state, watch_owner)
-        });
+        let state = ArcRwSignal::new(state);
+        let watch_owner = Owner::new();
         let (sender, mut receiver) = channel(capacity);
-        let reducer_state = state;
+        let reducer_state = state.clone();
         let effect_sender = sender.clone();
         any_spawner::Executor::spawn(async move {
             while let Some(action) = receiver.next().await {
-                let (new_state, effect) = (reducer)(reducer_state.get_untracked(), action);
+                let Some(current) = reducer_state.try_get_untracked() else {
+                    break;
+                };
+                let (new_state, effect) = (reducer)(current, action);
+                if reducer_state.is_disposed() {
+                    break;
+                }
                 reducer_state.set(new_state);
                 let ctx = Context {
                     sender: effect_sender.clone(),
@@ -150,7 +155,6 @@ impl<S: State, A: Action, D: Deps> Store<S, A, D> {
         });
         Self {
             state,
-            owner,
             watch_owner,
             sender,
             _deps: PhantomData,
@@ -175,21 +179,11 @@ impl<S: State, A: Action, D: Deps> Store<S, A, D> {
         F: Fn(&S) -> T + Send + Sync + 'static,
         T: State,
     {
-        let state = self.state;
-        self.owner.with(|| {
-            let owner = Owner::new();
-            let (memo, watch_owner) = owner.with(|| {
-                use reactive_graph::traits::Get;
-                let memo = Memo::new(move |_| selector(&state.get()));
-                let watch_owner = Owner::new();
-                (memo, watch_owner)
-            });
-            Reader {
-                memo,
-                owner,
-                watch_owner,
-            }
-        })
+        let state = self.state.clone();
+        use reactive_graph::traits::Get;
+        let memo = ArcMemo::new(move |_| selector(&state.get()));
+        let watch_owner = Owner::new();
+        Reader { memo, watch_owner }
     }
 }
 
@@ -204,12 +198,21 @@ impl<S: State, A: Action, D: Deps> Watch<S> for Store<S, A, D> {
     where
         F: Fn(&S) + Send + Sync + 'static,
     {
-        let state = self.state;
+        let state = self.state.clone();
         self.watch_owner.with(|| {
             use reactive_graph::traits::Get;
             reactive_graph::effect::Effect::watch(
-                move || state.get(),
-                move |value, _, _| callback(value),
+                move || {
+                    if state.is_disposed() {
+                        return None;
+                    }
+                    state.try_get()
+                },
+                move |value, _, _| {
+                    if let Some(value) = value {
+                        callback(&value);
+                    }
+                },
                 false,
             );
         });
@@ -221,9 +224,7 @@ impl<S: State, A: Action, D: Deps> Watch<S> for Store<S, A, D> {
 }
 
 pub struct Reader<S: State> {
-    memo: Memo<S>,
-    #[allow(dead_code)]
-    owner: Owner,
+    memo: ArcMemo<S>,
     watch_owner: Owner,
 }
 
@@ -232,12 +233,21 @@ impl<S: State> Watch<S> for Reader<S> {
     where
         F: Fn(&S) + Send + Sync + 'static,
     {
-        let memo = self.memo;
+        let memo = self.memo.clone();
         self.watch_owner.with(|| {
             use reactive_graph::traits::Get;
             reactive_graph::effect::Effect::watch(
-                move || memo.get(),
-                move |value, _, _| callback(value),
+                move || {
+                    if memo.is_disposed() {
+                        return None;
+                    }
+                    memo.try_get()
+                },
+                move |value, _, _| {
+                    if let Some(value) = value {
+                        callback(&value);
+                    }
+                },
                 false,
             );
         });
