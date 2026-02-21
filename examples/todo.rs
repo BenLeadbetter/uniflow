@@ -28,36 +28,37 @@ fn reducer(mut state: ToDo, action: Action) -> ToDo {
     state
 }
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     type Store = uniflow::Store<ToDo, Action>;
 
     uniflow::any_spawner::Executor::init_tokio().expect("initialize tokio executor");
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
     let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let mut store = Store::new(ToDo::default(), reducer);
 
-    local.block_on(&rt, async {
-        let mut store = Store::new(ToDo::default(), reducer);
+            store.watch(|todo| {
+                println!("\n--- Todo List ---");
+                for (i, item) in todo.items.iter().enumerate() {
+                    let check = if item.done { "x" } else { " " };
+                    println!("  {i}. [{check}] {}", item.what);
+                }
+                println!("-----------------");
+            });
 
-        store.watch(|todo| {
-            println!("\n--- Todo List ---");
-            for (i, item) in todo.items.iter().enumerate() {
-                let check = if item.done { "x" } else { " " };
-                println!("  {i}. [{check}] {}", item.what);
-            }
-            println!("-----------------");
-        });
+            store.dispatch(Action::Add("Washing up".into()));
+            store.dispatch(Action::Add("Haircut".into()));
+            store.dispatch(Action::Add("Call mum".into()));
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        store.dispatch(Action::Add("Washing up".into()));
-        store.dispatch(Action::Add("Haircut".into()));
-        store.dispatch(Action::Add("Call mum".into()));
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            store.dispatch(Action::Done(2));
+            store.dispatch(Action::Done(0));
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        store.dispatch(Action::Done(2));
-        store.dispatch(Action::Done(0));
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        store.disconnect();
-        store.shutdown()
-    });
+            store.disconnect();
+            store.shutdown()
+        })
+        .await;
 }
