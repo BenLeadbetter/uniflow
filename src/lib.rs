@@ -201,7 +201,7 @@ impl<S: State, A: Action, D: Deps> Watch<S> for Store<S, A, D> {
         let state = self.state.clone();
         self.watch_owner.with(|| {
             use reactive_graph::traits::Get;
-            reactive_graph::effect::Effect::watch(
+            reactive_graph::effect::Effect::watch_sync(
                 move || {
                     if state.is_disposed() {
                         return None;
@@ -236,7 +236,7 @@ impl<S: State> Watch<S> for Reader<S> {
         let memo = self.memo.clone();
         self.watch_owner.with(|| {
             use reactive_graph::traits::Get;
-            reactive_graph::effect::Effect::watch(
+            reactive_graph::effect::Effect::watch_sync(
                 move || {
                     if memo.is_disposed() {
                         return None;
