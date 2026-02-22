@@ -22,7 +22,7 @@ fn reducer(mut state: u32, action: Action) -> u32 {
 async fn main() {
     uniflow::any_spawner::Executor::init_tokio().expect("initialize tokio executor");
 
-    let mut store = uniflow::Store::new(0_u32, reducer);
+    let store = uniflow::Store::new(0_u32, reducer);
 
     store.dispatch(Action::Increment);
     store.dispatch(Action::Increment);

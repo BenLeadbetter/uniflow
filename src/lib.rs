@@ -165,13 +165,15 @@ impl<S: State, A: Action, D: Deps> Store<S, A, D> {
         Self::new_with_deps_and_capacity(state, reducer, deps, 128)
     }
 
-    pub fn dispatch(&mut self, action: A) {
-        let result = self.sender.try_send(action);
+    pub fn dispatch(&self, action: A) {
+        let mut sender = self.sender.clone();
+        let result = sender.try_send(action);
         handle_dispatch_result(result);
     }
 
-    pub fn shutdown(&mut self) {
-        self.sender.close_channel();
+    pub fn shutdown(&self) {
+        let mut sender = self.sender.clone();
+        sender.close_channel();
     }
 
     pub fn reader<T, F>(&self, selector: F) -> Reader<T>
@@ -332,7 +334,7 @@ mod tests {
     #[test]
     fn dispatching_an_action_mutates_the_state() {
         init_executor();
-        let mut store = Store::new(
+        let store = Store::new(
             ToDo {
                 items: vec![Item {
                     what: "Washing up".into(),
@@ -352,7 +354,7 @@ mod tests {
 
         init_executor();
 
-        let mut store = Store::new(
+        let store = Store::new(
             ToDo {
                 items: vec![Item {
                     what: "Washing up".into(),
@@ -389,7 +391,7 @@ mod tests {
     #[test]
     fn reader_reads_current_value_from_state() {
         init_executor();
-        let mut store = Store::new(
+        let store = Store::new(
             ToDo {
                 items: vec![Item {
                     what: "Washing up".into(),
@@ -423,7 +425,7 @@ mod tests {
 
         init_executor();
 
-        let mut store = Store::new(
+        let store = Store::new(
             ToDo {
                 items: vec![Item {
                     what: "Washing up".into(),
@@ -462,7 +464,7 @@ mod tests {
 
         init_executor();
 
-        let mut store = Store::new(
+        let store = Store::new(
             ToDo {
                 items: vec![Item {
                     what: "Washing up".into(),
@@ -499,7 +501,7 @@ mod tests {
 
         init_executor();
 
-        let mut store = Store::new(
+        let store = Store::new(
             ToDo {
                 items: vec![Item {
                     what: "Washing up".into(),
@@ -545,7 +547,7 @@ mod tests {
 
         init_executor();
 
-        let mut store = Store::new(
+        let store = Store::new(
             ToDo {
                 items: vec![Item {
                     what: "Washing up".into(),
@@ -590,7 +592,7 @@ mod tests {
     fn effect_dispatches_follow_up_action() {
         init_executor();
 
-        let mut store = Store::new_with_deps(
+        let store = Store::new_with_deps(
             0i32,
             |state: i32, action: i32| -> (i32, Effect<i32>) {
                 if action > 0 {
@@ -628,7 +630,7 @@ mod tests {
 
         init_executor();
 
-        let mut store = Store::new_with_deps(
+        let store = Store::new_with_deps(
             0i32,
             |state: i32, action: CountAction| -> (i32, Effect<CountAction, TestDeps>) {
                 match action {
@@ -655,7 +657,7 @@ mod tests {
     fn effect_none_is_inert() {
         init_executor();
 
-        let mut store = Store::new_with_deps(
+        let store = Store::new_with_deps(
             0i32,
             |state: i32, action: i32| -> (i32, Effect<i32>) { (state + action, Effect::none()) },
             (),
