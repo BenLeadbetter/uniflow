@@ -148,8 +148,8 @@ async fn main() {
         while let Some(Ok(event)) = stream.next().await {
             let state = store.get();
             use crossterm::event::{Event, KeyCode, KeyEvent};
-            match event {
-                Event::Key(event) => match event {
+            if let Event::Key(event) = event {
+                match event {
                     KeyEvent {
                         code: KeyCode::Up, ..
                     } => {
@@ -192,18 +192,16 @@ async fn main() {
                     KeyEvent {
                         code: KeyCode::Backspace,
                         ..
-                    } => match state.focus {
-                        Focus::Editor => {
+                    } => {
+                        if let Focus::Editor = state.focus {
                             store.dispatch(Action::Backspace);
                         }
-                        _ => {}
-                    },
+                    }
                     KeyEvent {
                         code: KeyCode::Esc, ..
                     } => break,
                     _ => {}
-                },
-                _ => {}
+                }
             };
         }
     }
