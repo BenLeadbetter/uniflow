@@ -276,6 +276,11 @@ fn handle_dispatch_result<A>(result: Result<(), TrySendError<A>>) {
     }
 }
 
+fn _assert_send_sync<S: State, A: Action, D: Deps>() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Store<S, A, D>>();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
