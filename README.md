@@ -13,12 +13,38 @@ The design of the API is loosely inspired by the excellent
 - **Actions** as enums representing events
 - **Pure reducers** that return new state plus optional effects
 - **Effects** for async operations that can dispatch new actions
-- **Thread-safe dispatch** via tokio integration
+- **Reader** allow selecting and observing a subset of the application state
+- **Watch** get a callback whenever the state, or a subset of it changes
+- **Asynchronous** via abstract async runtime integration
 - **Value Semantics** state and actions are treated as simple values - no references
 
 See [DESIGN.md](./DESIGN.md) for architecture details.
 
-## Quick Start
+## Value Semantics
+
+`uniflow` is built around a value semantics paradigm. 
+This means that your model and actions should be value types
+with deep copy and logical-equality semantics.
+Your reducer function should be a 
+[pure function](https://en.wikipedia.org/wiki/Pure_function).
+
+To achieve a scalable application model with value semantics without needing to 
+pay the overhead for copying the data all over the place a persistent
+data structure crate is recommended: for example [rpds](https://crates.io/crates/rpds).
+
+## Asynchronous by Design
+
+Dispatching actions back to the store is non-blocking and safe from 
+any thread or async process.
+
+The `uniflow::Effect` allows the running of heavy IO, or other
+non-pure application work in an asynchronously spawned task.
+
+`uniflow` is built on top of a 
+["spawner" abstraction from the Leptos project](https://crates.io/crates/any_spawner),
+allowing you to integrate with the async runtime of your choice: 
+Tokio or wasmbindgen, for example.
+
 
 ## Alternatives
 
