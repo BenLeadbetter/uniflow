@@ -82,6 +82,11 @@ impl<S: State, A: Action, D: Deps> Store<S, A, D> {
         self.reader().map(move |v| f(&v))
     }
 
+    pub fn commit(&self) {
+        self.source.send_down();
+        self.source.notify();
+    }
+
     pub fn shutdown(&self) {
         let mut sender = self.sender.clone();
         sender.close_channel();

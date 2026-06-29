@@ -1,25 +1,11 @@
 use crate::State;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-
-type NodeId = u64;
-type Callback = Box<dyn Fn()>;
-type Batch = Vec<(NodeId, Callback)>;
-
-static NEXT_NODE_ID: AtomicU64 = AtomicU64::new(0);
-
-fn push_or_replace(batch: &mut Batch, id: NodeId, cb: Callback) {
-    if let Some(entry) = batch.iter_mut().find(|(i, _)| *i == id) {
-        entry.1 = cb; // same node visited twice (diamond): newer value wins
-    } else {
-        batch.push((id, cb));
-    }
-}
 
 // ── Core traits ───────────────────────────────────────────────────────────────
 
 pub(crate) trait Propagate: Send + Sync {
-    fn propagate(&self, batch: &mut Batch);
+    fn send_down(&self);
+    fn notify(&self);
 }
 
 pub(crate) trait ReadableNode<T: State>: Send + Sync {
@@ -37,58 +23,69 @@ pub(crate) struct WatchSlot<T> {
 
 struct SourceNodeInner<T> {
     value: T,
-    children: Vec<Weak<dyn Propagate>>,
+    needs_notify: bool,
     watchers: Vec<WatchSlot<T>>,
+    children: Vec<Weak<dyn Propagate>>,
 }
 
 pub(crate) struct SourceNode<T: State> {
-    node_id: NodeId,
     inner: Mutex<SourceNodeInner<T>>,
 }
 
 impl<T: State> SourceNode<T> {
     pub(crate) fn new(value: T) -> Arc<Self> {
         Arc::new(SourceNode {
-            node_id: NEXT_NODE_ID.fetch_add(1, Ordering::Relaxed),
             inner: Mutex::new(SourceNodeInner {
                 value,
-                children: Vec::new(),
+                needs_notify: false,
                 watchers: Vec::new(),
+                children: Vec::new(),
             }),
         })
     }
 
     pub(crate) fn set(&self, new_value: T) {
-        let mut batch = Batch::new();
-        let children = {
+        {
             let mut guard = self.inner.lock().unwrap();
             if guard.value == new_value {
                 return;
             }
-            guard.value = new_value.clone();
-            guard.watchers.retain(|s| s.alive.upgrade().is_some());
-            let cbs: Vec<_> = guard.watchers.iter().map(|s| s.callback.clone()).collect();
-            if !cbs.is_empty() {
-                let v = new_value.clone();
-                push_or_replace(
-                    &mut batch,
-                    self.node_id,
-                    Box::new(move || {
-                        for cb in &cbs {
-                            cb(&v);
-                        }
-                    }),
-                );
-            }
-            guard.children.clone()
-        };
+            guard.value = new_value;
+            guard.needs_notify = true;
+        }
+        self.send_down();
+        self.notify();
+    }
+
+    pub(crate) fn send_down(&self) {
+        let children = self.inner.lock().unwrap().children.clone();
         for weak in &children {
             if let Some(child) = weak.upgrade() {
-                child.propagate(&mut batch);
+                child.send_down();
             }
         }
-        for (_, cb) in batch {
-            cb();
+    }
+
+    pub(crate) fn notify(&self) {
+        let (cbs, v, children) = {
+            let mut guard = self.inner.lock().unwrap();
+            if !guard.needs_notify {
+                return;
+            }
+            guard.needs_notify = false;
+            guard.watchers.retain(|s| s.alive.upgrade().is_some());
+            let cbs: Vec<_> = guard.watchers.iter().map(|s| s.callback.clone()).collect();
+            let v = guard.value.clone();
+            let children = guard.children.clone();
+            (cbs, v, children)
+        };
+        for cb in &cbs {
+            cb(&v);
+        }
+        for weak in &children {
+            if let Some(child) = weak.upgrade() {
+                child.notify();
+            }
         }
     }
 }
@@ -111,6 +108,8 @@ impl<T: State> ReadableNode<T> for SourceNode<T> {
 
 struct DerivedNodeInner<T> {
     cached: T,
+    needs_send_down: bool,
+    needs_notify: bool,
     watchers: Vec<WatchSlot<T>>,
     children: Vec<Weak<dyn Propagate>>,
 }
@@ -120,7 +119,6 @@ where
     S: State,
     T: State,
 {
-    node_id: NodeId,
     parent: Arc<dyn ReadableNode<S>>,
     selector: Arc<dyn Fn(S) -> T + Send + Sync>,
     inner: Mutex<DerivedNodeInner<T>>,
@@ -137,11 +135,12 @@ where
     ) -> Arc<Self> {
         let initial = selector(parent.get());
         let node = Arc::new(DerivedNode {
-            node_id: NEXT_NODE_ID.fetch_add(1, Ordering::Relaxed),
             parent: parent.clone(),
             selector: Arc::new(selector),
             inner: Mutex::new(DerivedNodeInner {
                 cached: initial,
+                needs_send_down: false,
+                needs_notify: false,
                 watchers: Vec::new(),
                 children: Vec::new(),
             }),
@@ -157,33 +156,47 @@ where
     S: State,
     T: State,
 {
-    fn propagate(&self, batch: &mut Batch) {
+    fn send_down(&self) {
         let new_value = (self.selector)(self.parent.get());
         let children = {
             let mut guard = self.inner.lock().unwrap();
-            if guard.cached == new_value {
+            if guard.cached != new_value {
+                guard.cached = new_value;
+                guard.needs_send_down = true;
+            }
+            if !guard.needs_send_down {
                 return;
             }
-            guard.cached = new_value.clone();
-            guard.watchers.retain(|s| s.alive.upgrade().is_some());
-            let cbs: Vec<_> = guard.watchers.iter().map(|s| s.callback.clone()).collect();
-            if !cbs.is_empty() {
-                let v = new_value.clone();
-                push_or_replace(
-                    batch,
-                    self.node_id,
-                    Box::new(move || {
-                        for cb in &cbs {
-                            cb(&v);
-                        }
-                    }),
-                );
-            }
+            guard.needs_send_down = false;
+            guard.needs_notify = true;
             guard.children.clone()
         };
         for weak in &children {
             if let Some(child) = weak.upgrade() {
-                child.propagate(batch);
+                child.send_down();
+            }
+        }
+    }
+
+    fn notify(&self) {
+        let (cbs, v, children) = {
+            let mut guard = self.inner.lock().unwrap();
+            if !guard.needs_notify {
+                return;
+            }
+            guard.needs_notify = false;
+            guard.watchers.retain(|s| s.alive.upgrade().is_some());
+            let cbs: Vec<_> = guard.watchers.iter().map(|s| s.callback.clone()).collect();
+            let v = guard.cached.clone();
+            let children = guard.children.clone();
+            (cbs, v, children)
+        };
+        for cb in &cbs {
+            cb(&v);
+        }
+        for weak in &children {
+            if let Some(child) = weak.upgrade() {
+                child.notify();
             }
         }
     }
@@ -211,6 +224,8 @@ where
 
 struct MergeNodeInner<T, U> {
     cached: (T, U),
+    needs_send_down: bool,
+    needs_notify: bool,
     watchers: Vec<WatchSlot<(T, U)>>,
     children: Vec<Weak<dyn Propagate>>,
 }
@@ -220,7 +235,6 @@ where
     T: State,
     U: State,
 {
-    node_id: NodeId,
     left: Arc<dyn ReadableNode<T>>,
     right: Arc<dyn ReadableNode<U>>,
     inner: Mutex<MergeNodeInner<T, U>>,
@@ -237,11 +251,12 @@ where
     ) -> Arc<Self> {
         let initial = (left.get(), right.get());
         let node = Arc::new(MergeNode {
-            node_id: NEXT_NODE_ID.fetch_add(1, Ordering::Relaxed),
             left: left.clone(),
             right: right.clone(),
             inner: Mutex::new(MergeNodeInner {
                 cached: initial,
+                needs_send_down: false,
+                needs_notify: false,
                 watchers: Vec::new(),
                 children: Vec::new(),
             }),
@@ -259,33 +274,47 @@ where
     T: State,
     U: State,
 {
-    fn propagate(&self, batch: &mut Batch) {
+    fn send_down(&self) {
         let new_value = (self.left.get(), self.right.get());
         let children = {
             let mut guard = self.inner.lock().unwrap();
-            if guard.cached == new_value {
+            if guard.cached != new_value {
+                guard.cached = new_value;
+                guard.needs_send_down = true;
+            }
+            if !guard.needs_send_down {
                 return;
             }
-            guard.cached = new_value.clone();
-            guard.watchers.retain(|s| s.alive.upgrade().is_some());
-            let cbs: Vec<_> = guard.watchers.iter().map(|s| s.callback.clone()).collect();
-            if !cbs.is_empty() {
-                let v = new_value.clone();
-                push_or_replace(
-                    batch,
-                    self.node_id,
-                    Box::new(move || {
-                        for cb in &cbs {
-                            cb(&v);
-                        }
-                    }),
-                );
-            }
+            guard.needs_send_down = false;
+            guard.needs_notify = true;
             guard.children.clone()
         };
         for weak in &children {
             if let Some(child) = weak.upgrade() {
-                child.propagate(batch);
+                child.send_down();
+            }
+        }
+    }
+
+    fn notify(&self) {
+        let (cbs, v, children) = {
+            let mut guard = self.inner.lock().unwrap();
+            if !guard.needs_notify {
+                return;
+            }
+            guard.needs_notify = false;
+            guard.watchers.retain(|s| s.alive.upgrade().is_some());
+            let cbs: Vec<_> = guard.watchers.iter().map(|s| s.callback.clone()).collect();
+            let v = guard.cached.clone();
+            let children = guard.children.clone();
+            (cbs, v, children)
+        };
+        for cb in &cbs {
+            cb(&v);
+        }
+        for weak in &children {
+            if let Some(child) = weak.upgrade() {
+                child.notify();
             }
         }
     }
