@@ -3,6 +3,7 @@ use futures::future::BoxFuture;
 
 mod node;
 mod reader;
+mod state;
 mod store;
 mod subscription;
 
@@ -11,16 +12,17 @@ mod executor;
 
 pub use any_spawner;
 pub use reader::{Merge, Reader, with};
+pub use state::State;
 pub use store::Store;
 
 pub mod prelude {
-    pub use crate::{Dispatch, Read};
+    pub use crate::{Dispatch, Read, ReadWrite, Write};
 }
 
 // ── Core trait aliases ────────────────────────────────────────────────────────
 
-pub trait State: Clone + PartialEq + Send + Sync + 'static {}
-impl<S: Clone + PartialEq + Send + Sync + 'static> State for S {}
+pub trait Value: Clone + PartialEq + Send + Sync + 'static {}
+impl<T: Clone + PartialEq + Send + Sync + 'static> Value for T {}
 
 pub trait Action: Send + 'static {}
 impl<A: Send + 'static> Action for A {}
@@ -28,26 +30,42 @@ impl<A: Send + 'static> Action for A {}
 pub trait Deps: Clone + Send + Sync + 'static {}
 impl<D: Clone + Send + Sync + 'static> Deps for D {}
 
-pub trait Reducer<S: State, A: Action>: Fn(S, A) -> S + Send + 'static {}
-impl<S: State, A: Action, R: Fn(S, A) -> S + Send + 'static> Reducer<S, A> for R {}
+pub trait Reducer<S: Value, A: Action>: Fn(S, A) -> S + Send + 'static {}
+impl<S: Value, A: Action, R: Fn(S, A) -> S + Send + 'static> Reducer<S, A> for R {}
 
-pub trait EffectReducer<S: State, A: Action, D: Deps>:
+pub trait EffectReducer<S: Value, A: Action, D: Deps>:
     Fn(S, A) -> (S, Effect<A, D>) + Send + 'static
 {
 }
-impl<S: State, A: Action, D: Deps, R: Fn(S, A) -> (S, Effect<A, D>) + Send + 'static>
+impl<S: Value, A: Action, D: Deps, R: Fn(S, A) -> (S, Effect<A, D>) + Send + 'static>
     EffectReducer<S, A, D> for R
 {
 }
 
 // ── Read trait ────────────────────────────────────────────────────────────────
 
-pub trait Read<T: Clone + PartialEq + Send + Sync + 'static>: Send + Sync {
+pub trait Read<T: Value>: Send + Sync {
     fn get(&self) -> T;
     fn watch<F: Fn(&T) + Send + Sync + 'static>(&self, f: F) -> &Self;
     fn bind<F: Fn(&T) + Send + Sync + 'static>(&self, f: F) -> &Self;
     fn unbind(&self);
 }
+
+// ── Write trait ───────────────────────────────────────────────────────────────
+
+pub trait Write<T: Value>: Send + Sync {
+    fn set(&self, value: T);
+}
+
+// ── ReadWrite trait ───────────────────────────────────────────────────────────
+
+pub trait ReadWrite<T: Value>: Read<T> + Write<T> {
+    fn update<F: Fn(T) -> T>(&self, f: F) {
+        self.set(f(self.get()));
+    }
+}
+
+impl<T: Value, X: Read<T> + Write<T>> ReadWrite<T> for X {}
 
 // ── Dispatch trait ────────────────────────────────────────────────────────────
 

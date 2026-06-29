@@ -7,18 +7,18 @@ use futures::channel::mpsc::{Sender, channel};
 use crate::node::{ReadableNode, SourceNode};
 use crate::reader::Reader;
 use crate::{
-    Action, Context, Deps, Dispatch, Effect, EffectReducer, Read, Reducer, State,
+    Action, Context, Deps, Dispatch, Effect, EffectReducer, Read, Reducer, Value,
     handle_dispatch_result,
 };
 
-pub struct Store<S: State, A: Action, D: Deps = ()> {
+pub struct Store<S: Value, A: Action, D: Deps = ()> {
     source: Arc<SourceNode<S>>,
     self_reader: Reader<S>,
     sender: Sender<A>,
     _deps: PhantomData<D>,
 }
 
-impl<S: State, A: Action> Store<S, A, ()> {
+impl<S: Value, A: Action> Store<S, A, ()> {
     pub fn new<R: Reducer<S, A>>(state: S, reducer: R) -> Self {
         let effect_reducer =
             move |s: S, a: A| -> (S, Effect<A, ()>) { (reducer(s, a), Effect::none()) };
@@ -32,7 +32,7 @@ impl<S: State, A: Action> Store<S, A, ()> {
     }
 }
 
-impl<S: State, A: Action, D: Deps> Store<S, A, D> {
+impl<S: Value, A: Action, D: Deps> Store<S, A, D> {
     pub fn new_with_deps<R: EffectReducer<S, A, D>>(state: S, reducer: R, deps: D) -> Self {
         Self::new_with_deps_and_capacity(state, reducer, deps, 128)
     }
@@ -93,7 +93,7 @@ impl<S: State, A: Action, D: Deps> Store<S, A, D> {
     }
 }
 
-impl<S: State, A: Action, D: Deps> Read<S> for Store<S, A, D> {
+impl<S: Value, A: Action, D: Deps> Read<S> for Store<S, A, D> {
     fn get(&self) -> S {
         self.self_reader.get()
     }
@@ -113,7 +113,7 @@ impl<S: State, A: Action, D: Deps> Read<S> for Store<S, A, D> {
     }
 }
 
-impl<S: State, A: Action, D: Deps> Dispatch<A> for Store<S, A, D> {
+impl<S: Value, A: Action, D: Deps> Dispatch<A> for Store<S, A, D> {
     fn dispatch(&self, action: A) {
         let mut sender = self.sender.clone();
         let result = sender.try_send(action);
@@ -122,7 +122,7 @@ impl<S: State, A: Action, D: Deps> Dispatch<A> for Store<S, A, D> {
 }
 
 #[cfg(test)]
-fn _assert_send_sync<S: State, A: Action, D: Deps>() {
+fn _assert_send_sync<S: Value, A: Action, D: Deps>() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Store<S, A, D>>();
 }

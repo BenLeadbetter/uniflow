@@ -1,4 +1,4 @@
-use crate::State;
+use crate::Value;
 use std::sync::{Arc, Mutex, Weak};
 
 // ── Core traits ───────────────────────────────────────────────────────────────
@@ -8,7 +8,7 @@ pub(crate) trait Propagate: Send + Sync {
     fn notify(&self);
 }
 
-pub(crate) trait ReadableNode<T: State>: Send + Sync {
+pub(crate) trait ReadableNode<T: Value>: Send + Sync {
     fn get(&self) -> T;
     fn add_watcher(&self, slot: WatchSlot<T>);
     fn add_child(&self, child: Weak<dyn Propagate>);
@@ -21,7 +21,7 @@ pub(crate) struct WatchSlot<T> {
 
 // ── Merge trait ───────────────────────────────────────────────────────────────
 
-pub(crate) trait MergeSources: State {
+pub(crate) trait MergeSources: Value {
     type Sources: Send + Sync;
     fn from_sources(sources: &Self::Sources) -> Self;
     fn add_child_to_all(sources: &Self::Sources, child: Weak<dyn Propagate>);
@@ -29,7 +29,7 @@ pub(crate) trait MergeSources: State {
 
 macro_rules! impl_merge_sources {
     ($(($T:ident, $idx:tt)),+ $(,)?) => {
-        impl<$($T: State),+> MergeSources for ($($T,)+) {
+        impl<$($T: Value),+> MergeSources for ($($T,)+) {
             type Sources = ($(Arc<dyn ReadableNode<$T>>,)+);
 
             fn from_sources(sources: &Self::Sources) -> Self {
@@ -57,11 +57,11 @@ struct SourceNodeInner<T> {
     children: Vec<Weak<dyn Propagate>>,
 }
 
-pub(crate) struct SourceNode<T: State> {
+pub(crate) struct SourceNode<T: Value> {
     inner: Mutex<SourceNodeInner<T>>,
 }
 
-impl<T: State> SourceNode<T> {
+impl<T: Value> SourceNode<T> {
     pub(crate) fn new(value: T) -> Arc<Self> {
         Arc::new(SourceNode {
             inner: Mutex::new(SourceNodeInner {
@@ -119,7 +119,7 @@ impl<T: State> SourceNode<T> {
     }
 }
 
-impl<T: State> ReadableNode<T> for SourceNode<T> {
+impl<T: Value> ReadableNode<T> for SourceNode<T> {
     fn get(&self) -> T {
         self.inner.lock().unwrap().value.clone()
     }
@@ -145,8 +145,8 @@ struct DerivedNodeInner<T> {
 
 pub(crate) struct DerivedNode<S, T>
 where
-    S: State,
-    T: State,
+    S: Value,
+    T: Value,
 {
     parent: Arc<dyn ReadableNode<S>>,
     selector: Arc<dyn Fn(S) -> T + Send + Sync>,
@@ -155,8 +155,8 @@ where
 
 impl<S, T> DerivedNode<S, T>
 where
-    S: State,
-    T: State,
+    S: Value,
+    T: Value,
 {
     pub(crate) fn new(
         parent: Arc<dyn ReadableNode<S>>,
@@ -182,8 +182,8 @@ where
 
 impl<S, T> Propagate for DerivedNode<S, T>
 where
-    S: State,
-    T: State,
+    S: Value,
+    T: Value,
 {
     fn send_down(&self) {
         let new_value = (self.selector)(self.parent.get());
@@ -233,8 +233,8 @@ where
 
 impl<S, T> ReadableNode<T> for DerivedNode<S, T>
 where
-    S: State,
-    T: State,
+    S: Value,
+    T: Value,
 {
     fn get(&self) -> T {
         self.inner.lock().unwrap().cached.clone()
@@ -346,7 +346,7 @@ impl<T: MergeSources> ReadableNode<T> for MergeNode<T> {
 }
 
 #[cfg(test)]
-pub(crate) fn merge_2<A: State, B: State>(
+pub(crate) fn merge_2<A: Value, B: Value>(
     a: Arc<dyn ReadableNode<A>>,
     b: Arc<dyn ReadableNode<B>>,
 ) -> Arc<MergeNode<(A, B)>> {
@@ -361,7 +361,7 @@ mod tests {
     use crate::subscription::Subscription;
     use std::sync::{Arc, Mutex};
 
-    fn make_slot<T: State>(received: Arc<Mutex<Vec<T>>>) -> (WatchSlot<T>, Subscription) {
+    fn make_slot<T: Value>(received: Arc<Mutex<Vec<T>>>) -> (WatchSlot<T>, Subscription) {
         let (sub, weak) = Subscription::new();
         let slot = WatchSlot {
             alive: weak,

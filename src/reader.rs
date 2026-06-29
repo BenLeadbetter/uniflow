@@ -2,17 +2,17 @@ use std::sync::{Arc, Mutex};
 
 use crate::node::{DerivedNode, MergeNode, ReadableNode, WatchSlot};
 use crate::subscription::Subscription;
-use crate::{Read, State};
+use crate::{Read, Value};
 
 pub struct Reader<T>
 where
-    T: Clone + PartialEq + Send + Sync + 'static,
+    T: Value,
 {
     pub(crate) node: Arc<dyn ReadableNode<T>>,
     connections: Mutex<Vec<Subscription>>,
 }
 
-impl<T: Clone + PartialEq + Send + Sync + 'static> Reader<T> {
+impl<T: Value> Reader<T> {
     pub(crate) fn new(node: Arc<dyn ReadableNode<T>>) -> Self {
         Reader {
             node,
@@ -29,7 +29,7 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Reader<T> {
     }
 }
 
-impl<T: Clone + PartialEq + Send + Sync + 'static> Read<T> for Reader<T> {
+impl<T: Value> Read<T> for Reader<T> {
     fn get(&self) -> T {
         self.node.get()
     }
@@ -54,7 +54,7 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Read<T> for Reader<T> {
     }
 }
 
-impl<T: Clone + PartialEq + Send + Sync + 'static> Clone for Reader<T> {
+impl<T: Value> Clone for Reader<T> {
     fn clone(&self) -> Self {
         Reader {
             node: self.node.clone(),
@@ -72,13 +72,13 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Clone for Reader<T> {
 /// Implemented for tuples of 2–5 readers. Use [`with`] as a free-function
 /// shorthand.
 pub trait Merge {
-    type Combined: State;
+    type Combined: Value;
     fn merge(self) -> Reader<Self::Combined>;
 }
 
 macro_rules! impl_merge {
     ($(($T:ident, $r:ident)),+ $(,)?) => {
-        impl<$($T: State),+> Merge for ($(Reader<$T>,)+) {
+        impl<$($T: Value),+> Merge for ($(Reader<$T>,)+) {
             type Combined = ($($T,)+);
             fn merge(self) -> Reader<($($T,)+)> {
                 let ($($r,)+) = self;
@@ -105,9 +105,7 @@ mod tests {
     use crate::node::SourceNode;
     use std::sync::{Arc, Mutex};
 
-    fn source_reader<T: Clone + PartialEq + Send + Sync + 'static>(
-        value: T,
-    ) -> (Arc<SourceNode<T>>, Reader<T>) {
+    fn source_reader<T: Value>(value: T) -> (Arc<SourceNode<T>>, Reader<T>) {
         let source = SourceNode::new(value);
         let reader = Reader::new(source.clone() as Arc<dyn ReadableNode<T>>);
         (source, reader)
