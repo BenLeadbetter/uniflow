@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 
-use crate::Read;
 use crate::node::{DerivedNode, MergeNode, ReadableNode, WatchSlot};
 use crate::subscription::Subscription;
+use crate::{Read, State};
 
 pub struct Reader<T>
 where
@@ -63,14 +63,39 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Clone for Reader<T> {
     }
 }
 
-/// Combine two readers into a reader that yields `(T, U)`, updating whenever
-/// either parent changes. The returned reader starts with no connections.
-pub fn with<T, U>(r1: Reader<T>, r2: Reader<U>) -> Reader<(T, U)>
-where
-    T: Clone + PartialEq + Send + Sync + 'static,
-    U: Clone + PartialEq + Send + Sync + 'static,
-{
-    Reader::new(MergeNode::new(r1.node, r2.node))
+// ── Merge trait ───────────────────────────────────────────────────────────────
+
+/// Implemented on tuples of [`Reader`]s. Merge the tuple into a single reader
+/// that yields the corresponding state tuple and updates whenever any source
+/// reader changes.
+///
+/// Implemented for tuples of 2–5 readers. Use [`with`] as a free-function
+/// shorthand.
+pub trait Merge {
+    type Combined: State;
+    fn merge(self) -> Reader<Self::Combined>;
+}
+
+macro_rules! impl_merge {
+    ($(($T:ident, $r:ident)),+ $(,)?) => {
+        impl<$($T: State),+> Merge for ($(Reader<$T>,)+) {
+            type Combined = ($($T,)+);
+            fn merge(self) -> Reader<($($T,)+)> {
+                let ($($r,)+) = self;
+                Reader::new(MergeNode::<($($T,)+)>::new(($($r.node,)+)))
+            }
+        }
+    };
+}
+
+impl_merge!((A, a), (B, b));
+impl_merge!((A, a), (B, b), (C, c));
+impl_merge!((A, a), (B, b), (C, c), (D, d));
+impl_merge!((A, a), (B, b), (C, c), (D, d), (E, e));
+
+/// Combine a tuple of readers into a single reader. See [`Merge`].
+pub fn with<R: Merge>(readers: R) -> Reader<R::Combined> {
+    readers.merge()
 }
 
 #[cfg(test)]
@@ -186,7 +211,7 @@ mod tests {
     fn with_combines_two_readers() {
         let (_, r1) = source_reader(1i32);
         let (_, r2) = source_reader(2i32);
-        let combined = with(r1, r2);
+        let combined = with((r1, r2));
         assert_eq!(combined.get(), (1, 2));
     }
 
@@ -194,7 +219,7 @@ mod tests {
     fn with_left_changes_tuple() {
         let (s1, r1) = source_reader(1i32);
         let (_, r2) = source_reader(2i32);
-        let combined = with(r1, r2);
+        let combined = with((r1, r2));
         let calls = Arc::new(Mutex::new(vec![]));
         let c = calls.clone();
         combined.watch(move |v| c.lock().unwrap().push(*v));
@@ -206,7 +231,7 @@ mod tests {
     fn with_right_changes_tuple() {
         let (_, r1) = source_reader(1i32);
         let (s2, r2) = source_reader(2i32);
-        let combined = with(r1, r2);
+        let combined = with((r1, r2));
         let calls = Arc::new(Mutex::new(vec![]));
         let c = calls.clone();
         combined.watch(move |v| c.lock().unwrap().push(*v));

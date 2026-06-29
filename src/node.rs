@@ -19,6 +19,35 @@ pub(crate) struct WatchSlot<T> {
     pub(crate) callback: Arc<dyn Fn(&T) + Send + Sync>,
 }
 
+// ── Merge trait ───────────────────────────────────────────────────────────────
+
+pub(crate) trait MergeSources: State {
+    type Sources: Send + Sync;
+    fn from_sources(sources: &Self::Sources) -> Self;
+    fn add_child_to_all(sources: &Self::Sources, child: Weak<dyn Propagate>);
+}
+
+macro_rules! impl_merge_sources {
+    ($(($T:ident, $idx:tt)),+ $(,)?) => {
+        impl<$($T: State),+> MergeSources for ($($T,)+) {
+            type Sources = ($(Arc<dyn ReadableNode<$T>>,)+);
+
+            fn from_sources(sources: &Self::Sources) -> Self {
+                ($(sources.$idx.get(),)+)
+            }
+
+            fn add_child_to_all(sources: &Self::Sources, child: Weak<dyn Propagate>) {
+                $(sources.$idx.add_child(child.clone());)+
+            }
+        }
+    };
+}
+
+impl_merge_sources!((A, 0), (B, 1));
+impl_merge_sources!((A, 0), (B, 1), (C, 2));
+impl_merge_sources!((A, 0), (B, 1), (C, 2), (D, 3));
+impl_merge_sources!((A, 0), (B, 1), (C, 2), (D, 3), (E, 4));
+
 // ── SourceNode ────────────────────────────────────────────────────────────────
 
 struct SourceNodeInner<T> {
@@ -222,37 +251,24 @@ where
 
 // ── MergeNode ─────────────────────────────────────────────────────────────────
 
-struct MergeNodeInner<T, U> {
-    cached: (T, U),
+struct MergeNodeInner<T> {
+    cached: T,
     needs_send_down: bool,
     needs_notify: bool,
-    watchers: Vec<WatchSlot<(T, U)>>,
+    watchers: Vec<WatchSlot<T>>,
     children: Vec<Weak<dyn Propagate>>,
 }
 
-pub(crate) struct MergeNode<T, U>
-where
-    T: State,
-    U: State,
-{
-    left: Arc<dyn ReadableNode<T>>,
-    right: Arc<dyn ReadableNode<U>>,
-    inner: Mutex<MergeNodeInner<T, U>>,
+pub(crate) struct MergeNode<T: MergeSources> {
+    sources: T::Sources,
+    inner: Mutex<MergeNodeInner<T>>,
 }
 
-impl<T, U> MergeNode<T, U>
-where
-    T: State,
-    U: State,
-{
-    pub(crate) fn new(
-        left: Arc<dyn ReadableNode<T>>,
-        right: Arc<dyn ReadableNode<U>>,
-    ) -> Arc<Self> {
-        let initial = (left.get(), right.get());
+impl<T: MergeSources> MergeNode<T> {
+    pub(crate) fn new(sources: T::Sources) -> Arc<Self> {
+        let initial = T::from_sources(&sources);
         let node = Arc::new(MergeNode {
-            left: left.clone(),
-            right: right.clone(),
+            sources,
             inner: Mutex::new(MergeNodeInner {
                 cached: initial,
                 needs_send_down: false,
@@ -263,19 +279,14 @@ where
         });
         let arc_prop: Arc<dyn Propagate> = node.clone();
         let weak = Arc::downgrade(&arc_prop);
-        left.add_child(weak.clone());
-        right.add_child(weak);
+        T::add_child_to_all(&node.sources, weak);
         node
     }
 }
 
-impl<T, U> Propagate for MergeNode<T, U>
-where
-    T: State,
-    U: State,
-{
+impl<T: MergeSources> Propagate for MergeNode<T> {
     fn send_down(&self) {
-        let new_value = (self.left.get(), self.right.get());
+        let new_value = T::from_sources(&self.sources);
         let children = {
             let mut guard = self.inner.lock().unwrap();
             if guard.cached != new_value {
@@ -320,22 +331,26 @@ where
     }
 }
 
-impl<T, U> ReadableNode<(T, U)> for MergeNode<T, U>
-where
-    T: State,
-    U: State,
-{
-    fn get(&self) -> (T, U) {
+impl<T: MergeSources> ReadableNode<T> for MergeNode<T> {
+    fn get(&self) -> T {
         self.inner.lock().unwrap().cached.clone()
     }
 
-    fn add_watcher(&self, slot: WatchSlot<(T, U)>) {
+    fn add_watcher(&self, slot: WatchSlot<T>) {
         self.inner.lock().unwrap().watchers.push(slot);
     }
 
     fn add_child(&self, child: Weak<dyn Propagate>) {
         self.inner.lock().unwrap().children.push(child);
     }
+}
+
+#[cfg(test)]
+pub(crate) fn merge_2<A: State, B: State>(
+    a: Arc<dyn ReadableNode<A>>,
+    b: Arc<dyn ReadableNode<B>>,
+) -> Arc<MergeNode<(A, B)>> {
+    MergeNode::<(A, B)>::new((a, b))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -484,7 +499,7 @@ mod tests {
     fn merge_node_initial_value_is_tuple() {
         let left = SourceNode::new(1i32);
         let right = SourceNode::new(2i32);
-        let merge = MergeNode::new(
+        let merge = merge_2(
             left as Arc<dyn ReadableNode<i32>>,
             right as Arc<dyn ReadableNode<i32>>,
         );
@@ -495,7 +510,7 @@ mod tests {
     fn merge_node_left_change_propagates() {
         let left = SourceNode::new(1i32);
         let right = SourceNode::new(2i32);
-        let merge = MergeNode::new(
+        let merge = merge_2(
             left.clone() as Arc<dyn ReadableNode<i32>>,
             right as Arc<dyn ReadableNode<i32>>,
         );
@@ -510,7 +525,7 @@ mod tests {
     fn merge_node_right_change_propagates() {
         let left = SourceNode::new(1i32);
         let right = SourceNode::new(2i32);
-        let merge = MergeNode::new(
+        let merge = merge_2(
             left as Arc<dyn ReadableNode<i32>>,
             right.clone() as Arc<dyn ReadableNode<i32>>,
         );
@@ -531,7 +546,7 @@ mod tests {
             DerivedNode::new(source.clone() as Arc<dyn ReadableNode<i32>>, |v| v + 1);
         let right: Arc<dyn ReadableNode<i32>> =
             DerivedNode::new(source.clone() as Arc<dyn ReadableNode<i32>>, |v| v + 2);
-        let merge = MergeNode::new(left, right);
+        let merge = merge_2(left, right);
         let calls = Arc::new(Mutex::new(vec![]));
         let (slot, _sub) = make_slot(calls.clone());
         merge.add_watcher(slot);
@@ -543,7 +558,7 @@ mod tests {
     fn merge_node_equal_output_stops_propagation() {
         let left = SourceNode::new(1i32);
         let right = SourceNode::new(2i32);
-        let merge = MergeNode::new(
+        let merge = merge_2(
             left as Arc<dyn ReadableNode<i32>>,
             right.clone() as Arc<dyn ReadableNode<i32>>,
         );
@@ -558,7 +573,7 @@ mod tests {
     fn merge_node_further_derived_from_merge() {
         let left = SourceNode::new(3i32);
         let right = SourceNode::new(4i32);
-        let merge: Arc<dyn ReadableNode<(i32, i32)>> = MergeNode::new(
+        let merge: Arc<dyn ReadableNode<(i32, i32)>> = merge_2(
             left.clone() as Arc<dyn ReadableNode<i32>>,
             right as Arc<dyn ReadableNode<i32>>,
         );

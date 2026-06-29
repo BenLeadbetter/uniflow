@@ -10,7 +10,7 @@ mod subscription;
 mod executor;
 
 pub use any_spawner;
-pub use reader::{Reader, with};
+pub use reader::{Merge, Reader, with};
 pub use store::Store;
 
 pub mod prelude {
@@ -595,7 +595,7 @@ mod tests {
 
         let r0 = store.derived(|s| s.items[0].done);
         let r1 = store.derived(|s| s.items[1].done);
-        let combined = with(r0, r1);
+        let combined = with((r0, r1));
 
         let received: Arc<RwLock<Option<(bool, bool)>>> = Arc::new(RwLock::new(None));
         let rc = received.clone();
