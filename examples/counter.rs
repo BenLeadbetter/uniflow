@@ -1,4 +1,4 @@
-use uniflow::Get;
+use uniflow::prelude::*;
 
 enum Action {
     Increment,

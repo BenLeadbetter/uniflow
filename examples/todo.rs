@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use std::sync::{Arc, Mutex};
-use uniflow::{Get, Watch};
+use uniflow::prelude::*;
 
 #[derive(Clone, Default, Debug, PartialEq)]
 struct Item {

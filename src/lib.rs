@@ -1,49 +1,65 @@
-use futures::StreamExt;
-use futures::channel::mpsc::{Sender, TrySendError, channel};
+use futures::channel::mpsc::{Sender, TrySendError};
 use futures::future::BoxFuture;
-use reactive_graph::{
-    computed::ArcMemo,
-    owner::Owner,
-    prelude::*,
-    signal::ArcRwSignal,
-    traits::{GetUntracked, IsDisposed},
-};
-use std::marker::PhantomData;
+
+mod node;
+mod reader;
+mod store;
+mod subscription;
 
 #[cfg(test)]
 mod executor;
 
 pub use any_spawner;
+pub use reader::{Reader, with};
+pub use store::Store;
+
+pub mod prelude {
+    pub use crate::{Dispatch, Read};
+}
+
+// ── Core trait aliases ────────────────────────────────────────────────────────
 
 pub trait State: Clone + PartialEq + Send + Sync + 'static {}
-
 impl<S: Clone + PartialEq + Send + Sync + 'static> State for S {}
 
 pub trait Action: Send + 'static {}
-
 impl<A: Send + 'static> Action for A {}
 
 pub trait Deps: Clone + Send + Sync + 'static {}
-
 impl<D: Clone + Send + Sync + 'static> Deps for D {}
 
 pub trait Reducer<S: State, A: Action>: Fn(S, A) -> S + Send + 'static {}
-
 impl<S: State, A: Action, R: Fn(S, A) -> S + Send + 'static> Reducer<S, A> for R {}
 
 pub trait EffectReducer<S: State, A: Action, D: Deps>:
     Fn(S, A) -> (S, Effect<A, D>) + Send + 'static
 {
 }
-
 impl<S: State, A: Action, D: Deps, R: Fn(S, A) -> (S, Effect<A, D>) + Send + 'static>
     EffectReducer<S, A, D> for R
 {
 }
 
+// ── Read trait ────────────────────────────────────────────────────────────────
+
+pub trait Read<T: Clone + PartialEq + Send + Sync + 'static>: Send + Sync {
+    fn get(&self) -> T;
+    fn watch<F: Fn(&T) + Send + Sync + 'static>(&self, f: F) -> &Self;
+    fn bind<F: Fn(&T) + Send + Sync + 'static>(&self, f: F) -> &Self;
+    fn unbind(&self);
+}
+
+// ── Dispatch trait ────────────────────────────────────────────────────────────
+
+pub trait Dispatch<A: Action> {
+    fn dispatch(&self, action: A);
+}
+
+// ── Context ───────────────────────────────────────────────────────────────────
+
 pub struct Context<A: Action, D: Deps = ()> {
-    sender: Sender<A>,
-    deps: D,
+    pub(crate) sender: Sender<A>,
+    pub(crate) deps: D,
 }
 
 impl<A: Action, D: Deps> Clone for Context<A, D> {
@@ -67,6 +83,14 @@ impl<A: Action, D: Deps> Context<A, D> {
     }
 }
 
+impl<A: Action, D: Deps> Dispatch<A> for Context<A, D> {
+    fn dispatch(&self, action: A) {
+        Context::dispatch(self, action);
+    }
+}
+
+// ── Effect ────────────────────────────────────────────────────────────────────
+
 pub struct Effect<A: Action, D: Deps = ()> {
     #[allow(clippy::type_complexity)]
     inner: Option<Box<dyn FnOnce(Context<A, D>) -> BoxFuture<'static, ()> + Send>>,
@@ -87,201 +111,25 @@ impl<A: Action, D: Deps> Effect<A, D> {
         Self { inner: None }
     }
 
-    fn run(self, ctx: Context<A, D>) {
+    pub(crate) fn run(self, ctx: Context<A, D>) {
         if let Some(f) = self.inner {
             any_spawner::Executor::spawn(f(ctx));
         }
     }
 }
 
-pub struct Store<S: State, A: Action, D: Deps = ()> {
-    state: ArcRwSignal<S>,
-    watch_owner: Owner,
-    sender: Sender<A>,
-    _deps: PhantomData<D>,
-}
+// ── Internal helpers ──────────────────────────────────────────────────────────
 
-pub trait Get<S: State> {
-    fn get(&self) -> S;
-}
-
-pub trait Watch<S: State> {
-    fn watch<F>(&self, callback: F)
-    where
-        F: Fn(&S) + Send + Sync + 'static;
-    fn disconnect(&self);
-}
-
-impl<S: State, A: Action> Store<S, A, ()> {
-    pub fn new_with_capacity<R: Reducer<S, A>>(state: S, reducer: R, capacity: usize) -> Self {
-        let effect_reducer =
-            move |s: S, a: A| -> (S, Effect<A, ()>) { (reducer(s, a), Effect::none()) };
-        Store::<S, A, ()>::new_with_deps_and_capacity(state, effect_reducer, (), capacity)
-    }
-
-    pub fn new<R: Reducer<S, A>>(state: S, reducer: R) -> Self {
-        Self::new_with_capacity(state, reducer, 128)
-    }
-}
-
-impl<S: State, A: Action, D: Deps> Store<S, A, D> {
-    pub fn new_with_deps_and_capacity<R: EffectReducer<S, A, D>>(
-        state: S,
-        reducer: R,
-        deps: D,
-        capacity: usize,
-    ) -> Self {
-        let state = ArcRwSignal::new(state);
-        let watch_owner = Owner::new();
-        let (sender, mut receiver) = channel(capacity);
-        let reducer_state = state.clone();
-        let effect_sender = sender.clone();
-        any_spawner::Executor::spawn(async move {
-            while let Some(action) = receiver.next().await {
-                let Some(current) = reducer_state.try_get_untracked() else {
-                    break;
-                };
-                let (new_state, effect) = (reducer)(current, action);
-                if reducer_state.is_disposed() {
-                    break;
-                }
-                reducer_state.set(new_state);
-                let ctx = Context {
-                    sender: effect_sender.clone(),
-                    deps: deps.clone(),
-                };
-                effect.run(ctx);
-            }
-        });
-        Self {
-            state,
-            watch_owner,
-            sender,
-            _deps: PhantomData,
-        }
-    }
-
-    pub fn new_with_deps<R: EffectReducer<S, A, D>>(state: S, reducer: R, deps: D) -> Self {
-        Self::new_with_deps_and_capacity(state, reducer, deps, 128)
-    }
-
-    pub fn dispatch(&self, action: A) {
-        let mut sender = self.sender.clone();
-        let result = sender.try_send(action);
-        handle_dispatch_result(result);
-    }
-
-    pub fn shutdown(&self) {
-        let mut sender = self.sender.clone();
-        sender.close_channel();
-    }
-
-    pub fn reader<T, F>(&self, selector: F) -> Reader<T>
-    where
-        F: Fn(&S) -> T + Send + Sync + 'static,
-        T: State,
-    {
-        let state = self.state.clone();
-        use reactive_graph::traits::Get;
-        let memo = ArcMemo::new(move |_| selector(&state.get()));
-        let watch_owner = Owner::new();
-        Reader { memo, watch_owner }
-    }
-}
-
-impl<S: State, A: Action, D: Deps> Get<S> for Store<S, A, D> {
-    fn get(&self) -> S {
-        self.state.get_untracked()
-    }
-}
-
-impl<S: State, A: Action, D: Deps> Watch<S> for Store<S, A, D> {
-    fn watch<F>(&self, callback: F)
-    where
-        F: Fn(&S) + Send + Sync + 'static,
-    {
-        let state = self.state.clone();
-        self.watch_owner.with(|| {
-            use reactive_graph::traits::Get;
-            reactive_graph::effect::Effect::watch_sync(
-                move || {
-                    if state.is_disposed() {
-                        return None;
-                    }
-                    state.try_get()
-                },
-                move |value, _, _| {
-                    if let Some(value) = value {
-                        callback(value);
-                    }
-                },
-                false,
-            );
-        });
-    }
-
-    fn disconnect(&self) {
-        self.watch_owner.cleanup();
-    }
-}
-
-pub struct Reader<S: State> {
-    memo: ArcMemo<S>,
-    watch_owner: Owner,
-}
-
-impl<S: State> Watch<S> for Reader<S> {
-    fn watch<F>(&self, callback: F)
-    where
-        F: Fn(&S) + Send + Sync + 'static,
-    {
-        let memo = self.memo.clone();
-        self.watch_owner.with(|| {
-            use reactive_graph::traits::Get;
-            reactive_graph::effect::Effect::watch_sync(
-                move || {
-                    if memo.is_disposed() {
-                        return None;
-                    }
-                    memo.try_get()
-                },
-                move |value, _, _| {
-                    if let Some(value) = value {
-                        callback(value);
-                    }
-                },
-                false,
-            );
-        });
-    }
-
-    fn disconnect(&self) {
-        self.watch_owner.cleanup();
-    }
-}
-
-impl<S: State> Get<S> for Reader<S> {
-    fn get(&self) -> S {
-        self.memo.get_untracked()
-    }
-}
-
-fn handle_dispatch_result<A>(result: Result<(), TrySendError<A>>) {
+pub(crate) fn handle_dispatch_result<A>(result: Result<(), TrySendError<A>>) {
     match result {
         Ok(()) => {}
         Err(e) => {
-            // channel closed is not an error
-            // but if the queue is backed up, that's
-            // likely a bug
             debug_assert!(!e.is_full())
         }
     }
 }
 
-fn _assert_send_sync<S: State, A: Action, D: Deps>() {
-    fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<Store<S, A, D>>();
-}
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -303,7 +151,7 @@ mod tests {
 
     #[derive(Clone, Default, Debug, PartialEq)]
     struct ToDo {
-        items: std::vec::Vec<Item>,
+        items: Vec<Item>,
     }
 
     enum Action {
@@ -389,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn reader_reads_current_value_from_state() {
+    fn derived_reads_current_value_from_state() {
         init_executor();
         let store = Store::new(
             ToDo {
@@ -400,7 +248,7 @@ mod tests {
             },
             reducer,
         );
-        let reader = store.reader(|state| state.items[0].clone());
+        let reader = store.derived(|state| state.items[0].clone());
         assert_eq!(
             reader.get(),
             Item {
@@ -420,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn watch_reader_calls_callback_on_state_change() {
+    fn watch_derived_calls_callback_on_state_change() {
         use std::sync::{Arc, RwLock};
 
         init_executor();
@@ -438,7 +286,7 @@ mod tests {
         let received: Arc<RwLock<Option<Item>>> = Arc::new(RwLock::new(None));
         let received_clone = received.clone();
 
-        let reader = store.reader(|state| state.items[0].clone());
+        let reader = store.derived(|state| state.items[0].clone());
         reader.watch(move |item| {
             *received_clone.write().unwrap() = Some(item.clone());
         });
@@ -459,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn disconnect_store_stops_watch_callbacks() {
+    fn unbind_store_stops_watch_callbacks() {
         use std::sync::{Arc, RwLock};
 
         init_executor();
@@ -488,15 +336,15 @@ mod tests {
         executor::tick();
         assert_eq!(*call_count.read().unwrap(), 1);
 
-        store.disconnect();
+        store.unbind();
 
         store.dispatch(Action::Add("New item".into()));
         executor::tick();
-        assert_eq!(*call_count.read().unwrap(), 1); // Still 1, not 2
+        assert_eq!(*call_count.read().unwrap(), 1); // still 1
     }
 
     #[test]
-    fn disconnect_reader_stops_watch_callbacks() {
+    fn unbind_reader_stops_watch_callbacks() {
         use std::sync::{Arc, RwLock};
 
         init_executor();
@@ -514,7 +362,7 @@ mod tests {
         let call_count: Arc<RwLock<usize>> = Arc::new(RwLock::new(0));
         let call_count_clone = call_count.clone();
 
-        let reader = store.reader(|state| state.items[0].clone());
+        let reader = store.derived(|state| state.items[0].clone());
         reader.watch(move |_| {
             *call_count_clone.write().unwrap() += 1;
         });
@@ -526,11 +374,11 @@ mod tests {
         executor::tick();
         assert_eq!(*call_count.read().unwrap(), 1);
 
-        reader.disconnect();
+        reader.unbind();
 
         store.dispatch(Action::Add("New item".into()));
         executor::tick();
-        assert_eq!(*call_count.read().unwrap(), 1); // Still 1, not 2
+        assert_eq!(*call_count.read().unwrap(), 1); // still 1
 
         assert_eq!(
             reader.get(),
@@ -542,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn can_rewatch_after_disconnect() {
+    fn can_rewatch_after_unbind() {
         use std::sync::{Arc, RwLock};
 
         init_executor();
@@ -574,7 +422,7 @@ mod tests {
         executor::tick();
         assert_eq!(*call_count.read().unwrap(), 1);
 
-        store.disconnect();
+        store.unbind();
 
         store.watch(move |_| {
             *call_count_clone.write().unwrap() += 1;
@@ -611,7 +459,7 @@ mod tests {
         );
 
         store.dispatch(3);
-        executor::tick(); // processes chain: 3 -> effect(2) -> effect(1) -> effect(0)
+        executor::tick();
         assert_eq!(store.get(), 6); // 3 + 2 + 1 + 0
     }
 
@@ -648,8 +496,8 @@ mod tests {
         );
 
         store.dispatch(CountAction::Multiply(5));
-        executor::tick(); // reducer processes Multiply(5), effect dispatches Set(50)
-        executor::tick(); // reducer processes Set(50)
+        executor::tick();
+        executor::tick();
         assert_eq!(store.get(), 50);
     }
 
@@ -670,5 +518,101 @@ mod tests {
         store.dispatch(3);
         executor::tick();
         assert_eq!(store.get(), 8);
+    }
+
+    #[test]
+    fn store_reader_returns_full_state_reader() {
+        init_executor();
+        let store = Store::new(ToDo::default(), reducer);
+        let reader = store.reader();
+        assert_eq!(reader.get(), ToDo::default());
+        store.dispatch(Action::Add("Task".into()));
+        executor::tick();
+        assert_eq!(reader.get().items.len(), 1);
+    }
+
+    #[test]
+    fn multiple_independent_subscriptions() {
+        use std::sync::{Arc, RwLock};
+
+        init_executor();
+
+        let store = Store::new(
+            ToDo {
+                items: vec![Item {
+                    what: "Task".into(),
+                    done: false,
+                }],
+            },
+            reducer,
+        );
+
+        let count_a: Arc<RwLock<usize>> = Arc::new(RwLock::new(0));
+        let count_b: Arc<RwLock<usize>> = Arc::new(RwLock::new(0));
+
+        let reader_a = store.reader();
+        let reader_b = reader_a.clone();
+
+        let ca = count_a.clone();
+        let cb = count_b.clone();
+        reader_a.watch(move |_| *ca.write().unwrap() += 1);
+        reader_b.watch(move |_| *cb.write().unwrap() += 1);
+
+        store.dispatch(Action::Done(0));
+        executor::tick();
+        assert_eq!(*count_a.read().unwrap(), 1);
+        assert_eq!(*count_b.read().unwrap(), 1);
+
+        drop(reader_a); // disconnect a
+
+        store.dispatch(Action::Add("New".into()));
+        executor::tick();
+        assert_eq!(*count_a.read().unwrap(), 1); // still 1
+        assert_eq!(*count_b.read().unwrap(), 2); // still active
+    }
+
+    #[test]
+    fn with_on_two_derived_readers() {
+        use std::sync::{Arc, RwLock};
+
+        init_executor();
+
+        let store = Store::new(
+            ToDo {
+                items: vec![
+                    Item {
+                        what: "A".into(),
+                        done: false,
+                    },
+                    Item {
+                        what: "B".into(),
+                        done: false,
+                    },
+                ],
+            },
+            reducer,
+        );
+
+        let r0 = store.derived(|s| s.items[0].done);
+        let r1 = store.derived(|s| s.items[1].done);
+        let combined = with(r0, r1);
+
+        let received: Arc<RwLock<Option<(bool, bool)>>> = Arc::new(RwLock::new(None));
+        let rc = received.clone();
+        combined.watch(move |v| *rc.write().unwrap() = Some(*v));
+
+        store.dispatch(Action::Done(0));
+        executor::tick();
+        assert_eq!(*received.read().unwrap(), Some((true, false)));
+
+        store.dispatch(Action::Done(1));
+        executor::tick();
+        assert_eq!(*received.read().unwrap(), Some((true, true)));
+    }
+
+    #[test]
+    fn store_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Store<ToDo, Action>>();
     }
 }
