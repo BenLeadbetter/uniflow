@@ -1,88 +1,84 @@
 # Uniflow Roadmap
 
-## Immediate Iterations
+## Completed
 
-Small, incremental steps toward a working library. Each step should compile and add clear value.
-
-### 1. Project Setup
-Add dependencies to `Cargo.toml`:
-- `reactive_graph` for reactive primitives
+### Project Setup ✅
 - `any_spawner` for pluggable async execution
+- `futures` for runtime-agnostic channels and async utilities
+- No dependency on `reactive_graph` or other reactive frameworks
 
-Verify the project compiles with dependencies.
+### Core Type Definitions ✅
+Foundational types and blanket trait implementations:
+- `Value` — `Clone + PartialEq + Send + Sync + 'static`
+- `Action` — `Send + 'static`
+- `Deps` — `Clone + Send + Sync + 'static`
+- `Reducer` and `EffectReducer` function traits
 
-### 2. Core Type Definitions
-Define the foundational types and trait bounds:
-- `Effect<A>` as a placeholder struct (empty for now)
-- Document required bounds for Model (`Clone + PartialEq + Send + 'static`)
-- Document required bounds for Action (`Send + 'static`)
+### Node-Based Reactive Primitives ✅
+Hand-rolled reactive graph (no `reactive_graph` dependency):
+- `SourceNode<T>` — root value cell; notifies watchers on change
+- `DerivedNode<T>` — cached derived value, updated lazily on upstream change
+- `MergeNode<T>` — combines multiple upstream nodes into a tuple
+- `WatchSlot` / `Subscription` — weak-reference watcher lifecycle
 
-### 3. Synchronous Store
-Implement a basic `Store<M, A>` with:
-- `new(initial, reducer)` - creates store with initial state
-- `get()` - returns current state snapshot
-- `dispatch(action)` - applies reducer directly (blocking, single-threaded)
+### State ✅
+Standalone reactive read/write primitive:
+- `State::new(value)` — wraps a `SourceNode`
+- Implements `Read<T>` (`get`, `watch`, `bind`, `unbind`) and `Write<T>` (`set`)
+- `State::reader()` — returns a read-only `Reader<T>` over the same node
+- Cloning shares the underlying node; subscriptions are independent per clone
 
-This gives a working Redux loop without async complexity.
+### Reader ✅
+Read-only reactive view over any `ReadableNode`:
+- `reader.get()` — current value snapshot
+- `reader.watch(f)` — fire callback on each change
+- `reader.bind(f)` — fire immediately, then watch
+- `reader.unbind()` — drop all subscriptions held by this reader
+- `reader.map(f)` — derive a new `Reader<U>` via `DerivedNode`
+- `with((r1, r2, ...))` / `Merge` trait — combine up to five readers into a tuple reader
 
-### 4. Signal-Backed State
-Replace internal `M` storage with `reactive_graph::signal::RwSignal<M>`:
-- State changes trigger reactive graph updates
-- `get()` reads from signal
-- Dispatch writes to signal after reducer
+### Effect ✅
+Async side effects returned alongside new state from the reducer:
+- `Effect::new(|ctx| async { ... })` — wraps an async closure
+- `Effect::none()` — no-op placeholder
+- Spawned via `any_spawner::Executor::spawn` after the reducer runs
 
-### 5. Reader with Memo
-Implement derived state via `reader()`:
-- `Reader<T>` type wrapping `Memo<T>` internally
-- `store.reader(|state| state.field)` creates cached derived view
-- Reader updates automatically when selected state changes
+### Context ✅
+Passed to effects; carries dispatch capability and injected dependencies:
+- `ctx.dispatch(action)` — non-blocking send to the store channel
+- `ctx.deps()` — access injected `D: Deps`
+- `Clone`-able across `await` points
+- `ctx.map(f: Fn(B) -> A)` — returns a `Context<B, D>` that maps actions through `f`
+  before forwarding. Enables passing a narrowed context to subsystems that only know
+  a subset of the store's action type (contravariant, as in lager).
 
-### 6. Effect Type ✅
-Implement real `Effect<A, D>`:
-- Wraps `Box<dyn FnOnce(Context<A, D>) -> BoxFuture<'static, ()> + Send>`
-- `Effect::new(|ctx| async move { ... })` constructor
-- `Effect::none()` for no-op effects
-- Captures async work that can dispatch actions
+### Channel-Based Dispatch ✅
+- Store holds a bounded `futures::channel::mpsc::Sender<A>` (runtime-agnostic)
+- `dispatch(&self, action)` sends synchronously; safe from any thread or real-time context
+- Capacity defaults to 128; configurable via `Store::new_with_capacity`
 
-### 7. Context Type ✅
-Implement `Context<A, D>` for effect dispatch:
-- Holds `Sender<A>` and injected `D: Deps` internally
-- `ctx.dispatch(action)` sends action to store (sync, non-blocking)
-- `ctx.deps()` accessor for injected dependencies
-- Clone-able for use across await points
+### Internal Reducer Task ✅
+Spawned in `Store::new()` via `any_spawner::Executor::spawn`:
+- Receives actions sequentially; applies reducer; updates `SourceNode`; spawns effects
+- `Store::shutdown()` closes the channel; task drains remaining actions and exits
 
-### 8. Channel-Based Dispatch
-Convert dispatch to channel-based:
-- Store holds `futures::channel::mpsc::UnboundedSender<A>` (runtime-agnostic)
-- `dispatch(&self, action)` sends to channel synchronously (non-blocking, thread-safe)
-- Safe to call from any thread, including real-time audio threads
+### Store Constructors ✅
+- `Store::new(state, reducer)` — simple reducer, no deps
+- `Store::new_with_capacity(state, reducer, capacity)` — configurable channel buffer
+- `Store::new_with_deps(state, reducer, deps)` — effect reducer with DI
+- `Store::new_with_deps_and_capacity(state, reducer, deps, capacity)`
 
-### 9. Internal Reducer Task
-Spawn the reducer task internally in `Store::new()`:
-- Receiver task is spawned via `any_spawner::Executor::spawn()`
-- Receives actions sequentially from channel
-- Applies reducer and updates signal
-- `shutdown()` method closes channel, allowing reducer task to drain and exit
-- Works with any executor: tokio in production, synchronous executor for testing
-- Future: `new_with_task()` variant for users needing manual task management
-
-### 10. Effect Spawning ✅
-Complete the async cycle:
-- After reducer returns effect, spawn it via `any_spawner`
-- Pass `Context` (with sender + deps) to effect so it can dispatch new actions
-- Effects run concurrently while reducer processes sequentially
-- `Store::new_with_deps()` and `Store::new_with_deps_and_capacity()` constructors for DI
+### Watch / Subscribe ✅
+- `store.watch(f)` / `store.bind(f)` / `store.unbind()` — via `Read<S>` impl
+- `store.reader()` — fresh `Reader<S>` over full state
+- `store.derived(f)` — `Reader<T>` projecting state through `f`
+- `store.context()` — `Context<A, D>` that dispatches into this store
 
 ---
 
 ## Long-Term Roadmap
 
 Features for future consideration, roughly ordered by utility:
-
-### Watch/Subscribe
-- `store.watch(callback)` for imperative subscriptions
-- Returns `Subscription` handle for cleanup
-- Useful for logging, persistence, debugging
 
 ### Middleware
 - Action interception before reducer
@@ -95,25 +91,8 @@ Features for future consideration, roughly ordered by utility:
 - Type-safe path into deep state structures
 
 ### Custom Scheduler Integration
-- Expose `any_spawner` API for injecting custom executors
 - Document how apps can use `any_spawner::Executor::init_custom_executor()`
 - Provide utilities for common patterns (test executor, single-threaded)
-- Leverage Leptos ecosystem compatibility
-
-### Cursor (Bidirectional Access)
-- Read-write access for form bindings
-- `cursor.get()` and `cursor.set(value)`
-- Automatically dispatches update actions
-
-### Transducer-Style Transforms
-- Chainable transformations on readers
-- `reader.map(f).filter(p).dedupe()`
-- Composable reactive pipelines
-
-### Batched Updates
-- Coalesce multiple dispatches into single state update
-- Reduce reactive churn during initialization
-- `store.batch(|| { dispatch(a); dispatch(b); })`
 
 ### Time-Travel Debugging
 - Record action history
