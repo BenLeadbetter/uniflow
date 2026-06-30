@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -29,11 +30,38 @@ impl<S: Value, A: Action> Store<S, A, ()> {
             move |s: S, a: A| -> (S, Effect<A, ()>) { (reducer(s, a), Effect::none()) };
         Store::<S, A, ()>::new_with_deps_and_capacity(state, effect_reducer, (), capacity)
     }
+
+    pub fn builder<R: Reducer<S, A>>(
+        state: S,
+        reducer: R,
+    ) -> StoreBuilder<S, A, impl EffectReducer<S, A, ()>, ()> {
+        StoreBuilder {
+            state,
+            reducer: move |s: S, a: A| -> (S, Effect<A, ()>) { (reducer(s, a), Effect::none()) },
+            deps: (),
+            capacity: 128,
+            _action: PhantomData,
+        }
+    }
 }
 
 impl<S: Value, A: Action, D: Deps> Store<S, A, D> {
     pub fn new_with_deps<R: EffectReducer<S, A, D>>(state: S, reducer: R, deps: D) -> Self {
         Self::new_with_deps_and_capacity(state, reducer, deps, 128)
+    }
+
+    pub fn builder_with_deps<R: EffectReducer<S, A, D>>(
+        state: S,
+        reducer: R,
+        deps: D,
+    ) -> StoreBuilder<S, A, R, D> {
+        StoreBuilder {
+            state,
+            reducer,
+            deps,
+            capacity: 128,
+            _action: PhantomData,
+        }
     }
 
     pub fn new_with_deps_and_capacity<R: EffectReducer<S, A, D>>(
@@ -141,6 +169,63 @@ impl<S: Value, A: Action, D: Deps> Dispatch<A> for Store<S, A, D> {
         let mut sender = self.sender.clone();
         let result = sender.try_send(action);
         handle_dispatch_result(result);
+    }
+}
+
+// ── StoreBuilder ──────────────────────────────────────────────────────────────
+
+pub struct StoreBuilder<S, A, R, D = ()> {
+    state: S,
+    reducer: R,
+    deps: D,
+    capacity: usize,
+    _action: PhantomData<fn(A)>,
+}
+
+impl<S, A, R, D> StoreBuilder<S, A, R, D>
+where
+    S: Value,
+    A: Action,
+    D: Deps,
+    R: EffectReducer<S, A, D>,
+{
+    /// Applies a middleware by wrapping the current reducer.
+    ///
+    /// `f` receives the inner reducer and the current initial state, and returns
+    /// the wrapped reducer together with the new initial state. Both the action
+    /// type (`B`) and the state type (`T`) may differ from the inner types,
+    /// enabling middlewares that transform actions (e.g. batch expansion) or
+    /// enrich state (e.g. time-travel history).
+    ///
+    /// For middlewares that leave the state type unchanged, pass it through:
+    /// `.wrap(|inner, state| (my_middleware(inner), state))`.
+    ///
+    /// Wraps are applied left-to-right: the first `.wrap` call produces the
+    /// outermost layer that dispatched actions encounter first.
+    pub fn wrap<T, B, R2, F>(self, f: F) -> StoreBuilder<T, B, R2, D>
+    where
+        T: Value,
+        B: Action,
+        R2: EffectReducer<T, B, D>,
+        F: FnOnce(R, S) -> (R2, T),
+    {
+        let (new_reducer, new_state) = f(self.reducer, self.state);
+        StoreBuilder {
+            state: new_state,
+            reducer: new_reducer,
+            deps: self.deps,
+            capacity: self.capacity,
+            _action: PhantomData,
+        }
+    }
+
+    pub fn with_capacity(mut self, capacity: usize) -> Self {
+        self.capacity = capacity;
+        self
+    }
+
+    pub fn build(self) -> Store<S, A, D> {
+        Store::new_with_deps_and_capacity(self.state, self.reducer, self.deps, self.capacity)
     }
 }
 

@@ -15,7 +15,7 @@ mod executor;
 pub use any_spawner;
 pub use reader::{Merge, Reader, with};
 pub use state::State;
-pub use store::Store;
+pub use store::{Store, StoreBuilder};
 
 pub mod prelude {
     pub use crate::{Dispatch, Read, ReadWrite, Write};
@@ -187,18 +187,18 @@ mod tests {
         items: Vec<Item>,
     }
 
+    #[derive(Debug)]
     enum Action {
         Add(String),
         Done(usize),
     }
 
     fn reducer(mut state: ToDo, action: Action) -> ToDo {
-        use Action::*;
         match action {
-            Add(what) => {
+            Action::Add(what) => {
                 state.items.push(Item { what, done: false });
             }
-            Done(index) => {
+            Action::Done(index) => {
                 state.items[index].done = true;
             }
         }
@@ -700,5 +700,113 @@ mod tests {
         let leaf: Context<&'static str> = mid.map(|s: &'static str| s == "yes");
         leaf.dispatch("yes"); // "yes" == "yes" → true → 1
         assert_eq!(receiver.try_recv().unwrap(), 1);
+    }
+
+    // ── StoreBuilder tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn builder_produces_equivalent_store() {
+        init_executor();
+        let store = Store::builder(ToDo::default(), reducer).build();
+        assert_eq!(store.get(), ToDo::default());
+        store.dispatch(Action::Add("Task".into()));
+        executor::tick();
+        assert_eq!(store.get().items.len(), 1);
+    }
+
+    #[test]
+    fn builder_with_logger_middleware() {
+        init_executor();
+        let store = Store::builder(
+            ToDo {
+                items: vec![Item {
+                    what: "Washing up".into(),
+                    done: false,
+                }],
+            },
+            reducer,
+        )
+        .wrap(|inner, state| (middleware::logger(inner), state))
+        .build();
+
+        store.dispatch(Action::Done(0));
+        executor::tick();
+        assert!(store.get().items[0].done);
+    }
+
+    #[test]
+    fn builder_with_two_middlewares_composes() {
+        use std::sync::{Arc, Mutex};
+
+        init_executor();
+
+        let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let inner_log = log.clone();
+        let outer_log = log.clone();
+
+        let store = Store::builder(ToDo::default(), reducer)
+            .wrap(move |inner, s| {
+                (
+                    move |state: ToDo, action: Action| -> (ToDo, Effect<Action>) {
+                        inner_log.lock().unwrap().push("inner");
+                        inner(state, action)
+                    },
+                    s,
+                )
+            })
+            .wrap(move |inner, s| {
+                (
+                    move |state: ToDo, action: Action| -> (ToDo, Effect<Action>) {
+                        outer_log.lock().unwrap().push("outer");
+                        inner(state, action)
+                    },
+                    s,
+                )
+            })
+            .build();
+
+        store.dispatch(Action::Add("Task".into()));
+        executor::tick();
+
+        let calls = log.lock().unwrap().clone();
+        assert_eq!(calls, vec!["outer", "inner"]);
+        assert_eq!(store.get().items.len(), 1);
+    }
+
+    #[test]
+    fn builder_with_deps_and_middleware() {
+        #[derive(Clone, Debug, PartialEq)]
+        enum CountAction {
+            Multiply(i32),
+            Set(i32),
+        }
+
+        #[derive(Clone)]
+        struct Multiplier(i32);
+
+        init_executor();
+
+        let store = Store::builder_with_deps(
+            0i32,
+            |state: i32, action: CountAction| -> (i32, Effect<CountAction, Multiplier>) {
+                match action {
+                    CountAction::Multiply(val) => (
+                        state,
+                        Effect::new(move |ctx: Context<CountAction, Multiplier>| async move {
+                            ctx.dispatch(CountAction::Set(val * ctx.deps().0));
+                        }),
+                    ),
+                    CountAction::Set(val) => (val, Effect::none()),
+                }
+            },
+            Multiplier(10),
+        )
+        .wrap(|inner, state| (middleware::logger(inner), state))
+        .build();
+
+        store.dispatch(CountAction::Multiply(5));
+        executor::tick();
+        executor::tick();
+        assert_eq!(store.get(), 50);
     }
 }

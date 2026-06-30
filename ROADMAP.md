@@ -74,16 +74,16 @@ Spawned in `Store::new()` via `any_spawner::Executor::spawn`:
 - `store.derived(f)` — `Reader<T>` projecting state through `f`
 - `store.context()` — `Context<A, D>` that dispatches into this store
 
+### Middleware ✅
+- Action interception before reducer
+- Transform or filter actions
+- Transform state
+
 ---
 
 ## Long-Term Roadmap
 
 Features for future consideration, roughly ordered by utility:
-
-### Middleware
-- Action interception before reducer
-- Transform or filter actions
-- Logging, analytics, dev tools integration
 
 ### Lens-Based Zoom
 - Composable readers focused on state subsets
