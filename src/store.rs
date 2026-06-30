@@ -1,4 +1,3 @@
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -15,7 +14,7 @@ pub struct Store<S: Value, A: Action, D: Deps = ()> {
     source: Arc<SourceNode<S>>,
     self_reader: Reader<S>,
     sender: Sender<A>,
-    _deps: PhantomData<D>,
+    deps: D,
 }
 
 impl<S: Value, A: Action> Store<S, A, ()> {
@@ -48,14 +47,24 @@ impl<S: Value, A: Action, D: Deps> Store<S, A, D> {
         let (sender, mut receiver) = channel(capacity);
         let reducer_source = source.clone();
         let effect_sender = sender.clone();
+        let deps_for_task = deps.clone();
         any_spawner::Executor::spawn(async move {
             while let Some(action) = receiver.next().await {
                 let current = reducer_source.get();
                 let (new_state, effect) = reducer(current, action);
                 reducer_source.set(new_state);
-                let ctx = Context {
-                    sender: effect_sender.clone(),
-                    deps: deps.clone(),
+
+                let ctx = {
+                    let sender = effect_sender.clone();
+                    let deps = deps_for_task.clone();
+                    Context {
+                        dispatcher: Arc::new(move |action: A| {
+                            let mut s = sender.clone();
+                            let result = s.try_send(action);
+                            handle_dispatch_result(result);
+                        }),
+                        deps,
+                    }
                 };
                 effect.run(ctx);
             }
@@ -64,7 +73,21 @@ impl<S: Value, A: Action, D: Deps> Store<S, A, D> {
             source,
             self_reader,
             sender,
-            _deps: PhantomData,
+            deps,
+        }
+    }
+
+    /// Returns a `Context<A, D>` that dispatches into this store.
+    pub fn context(&self) -> Context<A, D> {
+        let deps = self.deps.clone();
+        let sender = self.sender.clone();
+        Context {
+            dispatcher: Arc::new(move |action: A| {
+                let mut s = sender.clone();
+                let result = s.try_send(action);
+                handle_dispatch_result(result);
+            }),
+            deps,
         }
     }
 

@@ -1,4 +1,6 @@
-use futures::channel::mpsc::{Sender, TrySendError};
+use std::sync::Arc;
+
+use futures::channel::mpsc::TrySendError;
 use futures::future::BoxFuture;
 
 mod node;
@@ -76,14 +78,14 @@ pub trait Dispatch<A: Action> {
 // ── Context ───────────────────────────────────────────────────────────────────
 
 pub struct Context<A: Action, D: Deps = ()> {
-    pub(crate) sender: Sender<A>,
+    pub(crate) dispatcher: Arc<dyn Fn(A) + Send + Sync>,
     pub(crate) deps: D,
 }
 
 impl<A: Action, D: Deps> Clone for Context<A, D> {
     fn clone(&self) -> Self {
         Self {
-            sender: self.sender.clone(),
+            dispatcher: self.dispatcher.clone(),
             deps: self.deps.clone(),
         }
     }
@@ -91,13 +93,26 @@ impl<A: Action, D: Deps> Clone for Context<A, D> {
 
 impl<A: Action, D: Deps> Context<A, D> {
     pub fn dispatch(&self, action: A) {
-        let mut sender = self.sender.clone();
-        let result = sender.try_send(action);
-        handle_dispatch_result(result);
+        (self.dispatcher)(action);
     }
 
     pub fn deps(&self) -> &D {
         &self.deps
+    }
+
+    /// Returns a new `Context<B, D>` that maps actions `B -> A` before dispatching
+    /// to this context. Useful for passing a narrowed context to subsystems that
+    /// only know about a subset of the store's action type.
+    pub fn map<B, F>(&self, f: F) -> Context<B, D>
+    where
+        B: Action,
+        F: Fn(B) -> A + Send + Sync + 'static,
+    {
+        let parent = self.dispatcher.clone();
+        Context {
+            dispatcher: Arc::new(move |b| parent(f(b))),
+            deps: self.deps.clone(),
+        }
     }
 }
 
@@ -632,5 +647,58 @@ mod tests {
     fn store_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Store<ToDo, Action>>();
+    }
+
+    fn channel_context<A: crate::Action>(sender: futures::channel::mpsc::Sender<A>) -> Context<A> {
+        Context {
+            dispatcher: Arc::new(move |action: A| {
+                let mut s = sender.clone();
+                let result = s.try_send(action);
+                handle_dispatch_result(result);
+            }),
+            deps: (),
+        }
+    }
+
+    #[test]
+    fn mapped_context_dispatches_via_parent() {
+        use futures::channel::mpsc::channel;
+
+        let (sender, mut receiver) = channel::<i32>(10);
+        let ctx = channel_context(sender);
+        let mapped: Context<&'static str> = ctx.map(|s: &'static str| s.len() as i32);
+        mapped.dispatch("hello"); // len == 5
+        assert_eq!(receiver.try_recv().unwrap(), 5);
+    }
+
+    #[test]
+    fn mapped_context_shares_deps() {
+        use futures::channel::mpsc::channel;
+
+        #[derive(Clone)]
+        struct MyDeps {
+            value: i32,
+        }
+
+        let (sender, _) = channel::<i32>(10);
+        let base = channel_context(sender);
+        let ctx: Context<i32, MyDeps> = Context {
+            dispatcher: base.dispatcher,
+            deps: MyDeps { value: 42 },
+        };
+        let mapped: Context<bool, MyDeps> = ctx.map(|b: bool| if b { 1 } else { 0 });
+        assert_eq!(mapped.deps().value, 42);
+    }
+
+    #[test]
+    fn mapped_context_can_map_again() {
+        use futures::channel::mpsc::channel;
+
+        let (sender, mut receiver) = channel::<i32>(10);
+        let ctx = channel_context(sender);
+        let mid: Context<bool> = ctx.map(|b: bool| if b { 1 } else { 0 });
+        let leaf: Context<&'static str> = mid.map(|s: &'static str| s == "yes");
+        leaf.dispatch("yes"); // "yes" == "yes" → true → 1
+        assert_eq!(receiver.try_recv().unwrap(), 1);
     }
 }
