@@ -147,7 +147,7 @@ impl<A: Action, D: Deps> Effect<A, D> {
 
     pub(crate) fn run(self, ctx: Context<A, D>) {
         if let Some(f) = self.inner {
-            any_spawner::Executor::spawn(f(ctx));
+            any_spawner::Executor::spawn(async move { f(ctx).await });
         }
     }
 }
