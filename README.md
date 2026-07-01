@@ -124,17 +124,22 @@ fn main() {
     assert_eq!(age.get(), 33);
 
     // register a callback that fires whenever age changes
-    let call_count = Arc::new(AtomicU32::new(0));
-    let watcher_count = call_count.clone();
-    age.watch(move |_| { watcher_count.fetch_add(1, Ordering::Relaxed); });
+    let count = {
+        let count = Arc::new(AtomicU32::new(0));
+        let watch_count = count.clone();
+        age.watch(move |_| { watch_count.fetch_add(1, Ordering::Relaxed); });
+        count
+    };
 
     // when the watched value changes the callback fires
     state.set(Record { age: 34, ..state.get() });
-    assert_eq!(call_count.load(Ordering::Relaxed), 1);
+    assert_eq!(age.get(), 34);
+    assert_eq!(count.load(Ordering::Relaxed), 1);
 
     // when only an unrelated field changes the callback does not fire
     state.set(Record { name: "Halo".into(), ..state.get() });
-    assert_eq!(call_count.load(Ordering::Relaxed), 1);
+    assert_eq!(age.get(), 34);
+    assert_eq!(count.load(Ordering::Relaxed), 1);
 }
 ```
 
@@ -156,29 +161,32 @@ struct Rect {
 fn main() {
     let state = uniflow::State::new(Rect { width: 800, height: 600, x: 100, y: 200 });
 
-    let width = state.reader().map(|s: Rect| s.width);
-    let height = state.reader().map(|s: Rect| s.height);
-    let recompute_count = Arc::new(AtomicU32::new(0));
-    let area = {
-        let count = recompute_count.clone();
-        uniflow::with((width, height)).map(move |(width, height)| { 
-            count.fetch_add(1, Ordering::Relaxed);
-            width * height
-        })
+    let (area, recomputed) = {
+        let recomputed = Arc::new(AtomicU32::new(0));
+        let width = state.reader().map(|s: Rect| s.width);
+        let height = state.reader().map(|s: Rect| s.height);
+        let map_recomputed = recomputed.clone();
+        (
+            uniflow::with((width, height)).map(move |(width, height)| { 
+                map_recomputed.fetch_add(1, Ordering::Relaxed);
+                width * height
+            }), 
+            recomputed,
+        )
     };
 
     assert_eq!(area.get(), 480_000);
-    assert_eq!(recompute_count.load(Ordering::Relaxed), 1);
+    assert_eq!(recomputed.load(Ordering::Relaxed), 1);
 
     // updating the watched state triggers a recomputation
     state.set(Rect { width: 600, ..state.get() });
     assert_eq!(area.get(), 360_000);
-    assert_eq!(recompute_count.load(Ordering::Relaxed), 2);
+    assert_eq!(recomputed.load(Ordering::Relaxed), 2);
 
     // updating irrelevant state does not
     state.set(Rect { x: 0, ..state.get() });
     assert_eq!(area.get(), 360_000);
-    assert_eq!(recompute_count.load(Ordering::Relaxed), 2);
+    assert_eq!(recomputed.load(Ordering::Relaxed), 2);
 }
 ```
 
@@ -205,12 +213,12 @@ struct Reset;
 // the external contract is only Reader + Context.
 // no Store required — swap in a plain State and Context for isolated unit tests.
 struct Widget {
-    reader: Reader<bool>,
+    is_even: Reader<bool>,
     ctx: Context<Reset>,
 }
 
 impl Widget {
-    fn is_even(&self) -> bool { self.reader.get() }
+    fn is_even(&self) -> bool { self.is_even.get() }
     fn reset(&self) { self.ctx.dispatch(Reset); }
 }
 
@@ -219,7 +227,7 @@ fn main() {
 
     let store = uniflow::Store::new(0u32, reducer);
     let widget = Widget {
-        reader: store.reader().map(|v| v % 2 == 0),
+        is_even: store.reader().map(|v| v % 2 == 0),
         ctx: store.context().map(|reset| Action::Reset),
     };
 
@@ -256,9 +264,9 @@ struct State { result: Option<u32> }
 // Deps are injected at store construction and available inside every effect.
 // Keep them out of State so the reducer stays a pure function.
 #[derive(Clone, Default)]
-struct HeavyDependency {}
+struct Dependency {}
 
-impl HeavyDependency {
+impl Dependency {
     fn expensive_io_task(&self) -> u32 {
         42
     }
@@ -266,12 +274,12 @@ impl HeavyDependency {
 
 enum Action { Compute, StoreResult(u32) }
 
-fn reducer(state: State, action: Action) -> (State, Effect<Action, HeavyDependency>) {
+fn reducer(state: State, action: Action) -> (State, Effect<Action, Dependency>) {
     match action {
         Action::Compute => (
             state,
             // effect is spawned as an async task
-            Effect::new(move |ctx: Context<Action, HeavyDependency>| async move {
+            Effect::new(move |ctx: Context<Action, Dependency>| async move {
                 let result = ctx.deps().expensive_io_task();
                 ctx.dispatch(Action::StoreResult(result));
             }),
@@ -286,7 +294,7 @@ fn main() {
     let store = uniflow::Store::new_with_deps(
         State { result: None },
         reducer,
-        HeavyDependency::default(),
+        Dependency::default(),
     );
 
     store.dispatch(Action::Compute);
