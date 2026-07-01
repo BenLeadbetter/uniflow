@@ -163,11 +163,11 @@ compose a new closure around the parent without requiring a channel of type `Sen
 Uniflow's reactivity does not depend on any external reactive library.
 Instead it uses a small set of node types:
 
-| Node | Role |
-|------|------|
-| `SourceNode<T>` | Root value cell. `set(value)` updates and notifies watchers if the value changed (`PartialEq`). |
-| `DerivedNode<T>` | Lazy cached projection. Recomputes when its upstream fires; notifies its own watchers only when the derived value changes. |
-| `MergeNode<(A,B,...)>` | Combines two–five upstream nodes into a tuple. Fires whenever any upstream changes. |
+| Node                   | Role                                                                                                                       |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `SourceNode<T>`        | Root value cell. `set(value)` updates and notifies watchers if the value changed (`PartialEq`).                            |
+| `DerivedNode<T>`       | Lazy cached projection. Recomputes when its upstream fires; notifies its own watchers only when the derived value changes. |
+| `MergeNode<(A,B,...)>` | Combines two–five upstream nodes into a tuple. Fires whenever any upstream changes.                                        |
 
 All nodes implement `ReadableNode<T>` (the internal trait), allowing `Reader<T>` to
 work uniformly across all of them.

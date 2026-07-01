@@ -10,6 +10,8 @@ mod state;
 mod store;
 mod subscription;
 
+pub mod manual_spawner;
+
 #[cfg(test)]
 mod executor;
 
