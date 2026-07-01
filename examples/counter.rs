@@ -1,4 +1,4 @@
-use uniflow::prelude::*;
+use uniflow::{Dispatch, Read};
 
 enum Action {
     Increment,
@@ -24,12 +24,14 @@ async fn main() {
 
     let store = uniflow::Store::new(0_u32, reducer);
 
+    store.watch(|value| println!("counter is now {}", value));
+
     store.dispatch(Action::Increment);
     store.dispatch(Action::Increment);
     store.dispatch(Action::Multiply(3));
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    println!("state: {}", store.get());
+    assert_eq!(store.get(), 6);
 
     store.shutdown();
 }

@@ -22,6 +22,55 @@ Uniflow provides a predictable state container following the Redux/Elm architect
 
 See [DESIGN.md](./DESIGN.md) for architecture details.
 
+## Quick Start
+
+```rust
+use uniflow::{Dispatch, Read};
+
+// Actions encode the semantics of different operations which 
+// might be done to the state, normally mutating it into a new value.
+enum Action {
+    Increment,
+    Multiply(u32),
+}
+
+// The reducer function is a pure function which mutates state
+// according to the provided action.
+fn reducer(mut state: u32, action: Action) -> u32 {
+    use Action::*;
+    match action {
+        Increment => {
+            state += 1;
+        }
+        Multiply(m) => {
+            state *= m;
+        }
+    }
+    state
+}
+
+#[tokio::main]
+async fn main() {
+    uniflow::any_spawner::Executor::init_tokio().expect("initialize tokio executor");
+
+    // The store acts as the source of truth for the application data
+    let store = uniflow::Store::new(0_u32, reducer);
+
+    // Subscribe
+    store.watch(|value| println!("counter is now {}", value));
+
+    store.dispatch(Action::Increment);
+    store.dispatch(Action::Increment);
+    store.dispatch(Action::Multiply(3));
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert_eq!(store.get(), 6);
+
+    store.shutdown();
+}
+```
+
+
 ## Value Semantics
 
 `uniflow` is built around a value semantics paradigm.

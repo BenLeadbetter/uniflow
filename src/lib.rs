@@ -1,7 +1,8 @@
-use std::sync::Arc;
+#![doc = include_str!("../README.md")]
 
 use futures::channel::mpsc::TrySendError;
 use futures::future::BoxFuture;
+use std::sync::Arc;
 
 mod node;
 mod reader;
