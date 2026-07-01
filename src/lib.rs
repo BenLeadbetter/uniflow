@@ -727,7 +727,7 @@ mod tests {
             },
             reducer,
         )
-        .wrap(|inner, state| (middleware::logger(inner), state))
+        .wrap(|inner, state| (move |s, a| inner(s, a), state))
         .build();
 
         store.dispatch(Action::Done(0));
@@ -802,7 +802,7 @@ mod tests {
             },
             Multiplier(10),
         )
-        .wrap(|inner, state| (middleware::logger(inner), state))
+        .wrap(|inner, state| (move |s, a| inner(s, a), state))
         .build();
 
         store.dispatch(CountAction::Multiply(5));
