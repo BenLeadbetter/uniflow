@@ -147,6 +147,47 @@ impl<A: Action, D: Deps> Effect<A, D> {
         Self { inner: None }
     }
 
+    pub fn task<Fut>(fut: Fut) -> Self
+    where
+        Fut: std::future::Future<Output = A> + Send + 'static,
+    {
+        Self::new(|ctx| async move {
+            ctx.dispatch(fut.await);
+        })
+    }
+
+    pub fn batch(effects: impl IntoIterator<Item = Self>) -> Self {
+        let inners: Vec<_> = effects.into_iter().filter_map(|e| e.inner).collect();
+        if inners.is_empty() {
+            return Self::none();
+        }
+        Self {
+            inner: Some(Box::new(move |ctx| {
+                Box::pin(async move {
+                    for f in inners {
+                        let ctx = ctx.clone();
+                        any_spawner::Executor::spawn(async move { f(ctx).await });
+                    }
+                })
+            })),
+        }
+    }
+
+    pub fn map<B: Action>(self, f: impl Fn(A) -> B + Send + Sync + 'static) -> Effect<B, D> {
+        match self.inner {
+            None => Effect { inner: None },
+            Some(inner) => {
+                let f = Arc::new(f);
+                Effect {
+                    inner: Some(Box::new(move |ctx_b: Context<B, D>| {
+                        let ctx_a = ctx_b.map(move |a: A| f(a));
+                        Box::pin(async move { inner(ctx_a).await })
+                    })),
+                }
+            }
+        }
+    }
+
     pub(crate) fn run(self, ctx: Context<A, D>) {
         if let Some(f) = self.inner {
             any_spawner::Executor::spawn(async move { f(ctx).await });
@@ -533,7 +574,6 @@ mod tests {
 
         store.dispatch(CountAction::Multiply(5));
         executor::tick();
-        executor::tick();
         assert_eq!(store.get(), 50);
     }
 
@@ -554,6 +594,77 @@ mod tests {
         store.dispatch(3);
         executor::tick();
         assert_eq!(store.get(), 8);
+    }
+
+    #[test]
+    fn effect_task_dispatches_future_result() {
+        init_executor();
+
+        let store = Store::new_with_deps(
+            0i32,
+            |state: i32, action: i32| -> (i32, Effect<i32>) {
+                if action == 1 {
+                    (state + action, Effect::task(async move { 42i32 }))
+                } else {
+                    (state + action, Effect::none())
+                }
+            },
+            (),
+        );
+
+        store.dispatch(1);
+        executor::tick();
+        assert_eq!(store.get(), 43);
+    }
+
+    #[test]
+    fn effect_batch_runs_all_effects() {
+        init_executor();
+
+        let store = Store::new_with_deps(
+            0i32,
+            |state: i32, action: i32| -> (i32, Effect<i32>) {
+                match action {
+                    0 => (
+                        state,
+                        Effect::batch([
+                            Effect::task(async { 1i32 }),
+                            Effect::task(async { 2i32 }),
+                            Effect::task(async { 3i32 }),
+                        ]),
+                    ),
+                    _ => (state + action, Effect::none()),
+                }
+            },
+            (),
+        );
+
+        store.dispatch(0);
+        executor::tick();
+        assert_eq!(store.get(), 6);
+    }
+
+    #[test]
+    fn effect_map_lifts_sub_action() {
+        init_executor();
+
+        let store = Store::new_with_deps(
+            0i32,
+            |state: i32, action: i32| -> (i32, Effect<i32>) {
+                if action == 1 {
+                    let sub_effect: Effect<i32> = Effect::task(async { 2i32 });
+                    let root_effect = sub_effect.map(|a: i32| a + 100);
+                    (state, root_effect)
+                } else {
+                    (state + action, Effect::none())
+                }
+            },
+            (),
+        );
+
+        store.dispatch(1);
+        executor::tick();
+        assert_eq!(store.get(), 102);
     }
 
     #[test]
@@ -808,7 +919,6 @@ mod tests {
         .build();
 
         store.dispatch(CountAction::Multiply(5));
-        executor::tick();
         executor::tick();
         assert_eq!(store.get(), 50);
     }

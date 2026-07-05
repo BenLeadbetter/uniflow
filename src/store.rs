@@ -31,6 +31,10 @@ impl<S: Value, A: Action> Store<S, A, ()> {
         Store::<S, A, ()>::new_with_deps_and_capacity(state, effect_reducer, (), capacity)
     }
 
+    pub fn new_with_effects<R: EffectReducer<S, A, ()>>(state: S, reducer: R) -> Self {
+        Self::new_with_deps_and_capacity(state, reducer, (), 128)
+    }
+
     pub fn builder<R: Reducer<S, A>>(
         state: S,
         reducer: R,
@@ -38,6 +42,19 @@ impl<S: Value, A: Action> Store<S, A, ()> {
         StoreBuilder {
             state,
             reducer: move |s: S, a: A| -> (S, Effect<A, ()>) { (reducer(s, a), Effect::none()) },
+            deps: (),
+            capacity: 128,
+            _action: PhantomData,
+        }
+    }
+
+    pub fn builder_with_effects<R: EffectReducer<S, A, ()>>(
+        state: S,
+        reducer: R,
+    ) -> StoreBuilder<S, A, R, ()> {
+        StoreBuilder {
+            state,
+            reducer,
             deps: (),
             capacity: 128,
             _action: PhantomData,
