@@ -16,7 +16,7 @@ pub(crate) trait ReadableNode<T: Value>: Send + Sync {
 
 pub(crate) struct WatchSlot<T> {
     pub(crate) alive: Weak<()>,
-    pub(crate) callback: Arc<dyn Fn(&T) + Send + Sync>,
+    pub(crate) callback: Arc<Mutex<Box<dyn FnMut(&T) + Send + Sync>>>,
 }
 
 // ── Merge trait ───────────────────────────────────────────────────────────────
@@ -123,7 +123,7 @@ impl<T: Value> SourceNode<T> {
             (cbs, v, children)
         };
         for cb in &cbs {
-            cb(&v);
+            cb.lock().unwrap()(&v);
         }
         for weak in &children {
             if let Some(child) = weak.upgrade() {
@@ -163,7 +163,7 @@ where
     T: Value,
 {
     parent: Arc<dyn ReadableNode<S>>,
-    selector: Arc<dyn Fn(S) -> T + Send + Sync>,
+    selector: Mutex<Box<dyn FnMut(S) -> T + Send + Sync>>,
     inner: Mutex<DerivedNodeInner<T>>,
 }
 
@@ -174,12 +174,12 @@ where
 {
     pub(crate) fn new(
         parent: Arc<dyn ReadableNode<S>>,
-        selector: impl Fn(S) -> T + Send + Sync + 'static,
+        mut selector: impl FnMut(S) -> T + Send + Sync + 'static,
     ) -> Arc<Self> {
         let initial = selector(parent.get());
         let node = Arc::new(DerivedNode {
             parent: parent.clone(),
-            selector: Arc::new(selector),
+            selector: Mutex::new(Box::new(selector)),
             inner: Mutex::new(DerivedNodeInner {
                 cached: initial,
                 needs_send_down: false,
@@ -200,7 +200,7 @@ where
     T: Value,
 {
     fn send_down(&self) {
-        let new_value = (self.selector)(self.parent.get());
+        let new_value = (self.selector.lock().unwrap())(self.parent.get());
         let children = {
             let mut guard = self.inner.lock().unwrap();
             if guard.cached != new_value {
@@ -235,7 +235,7 @@ where
             (cbs, v, children)
         };
         for cb in &cbs {
-            cb(&v);
+            cb.lock().unwrap()(&v);
         }
         for weak in &children {
             if let Some(child) = weak.upgrade() {
@@ -335,7 +335,7 @@ impl<T: MergeSources> Propagate for MergeNode<T> {
             (cbs, v, children)
         };
         for cb in &cbs {
-            cb(&v);
+            cb.lock().unwrap()(&v);
         }
         for weak in &children {
             if let Some(child) = weak.upgrade() {
@@ -379,7 +379,10 @@ mod tests {
         let (sub, weak) = Subscription::new();
         let slot = WatchSlot {
             alive: weak,
-            callback: Arc::new(move |v: &T| received.lock().unwrap().push(v.clone())),
+            callback: Arc::new(Mutex::new(Box::new(move |v: &T| {
+                received.lock().unwrap().push(v.clone())
+            })
+                as Box<dyn FnMut(&T) + Send + Sync>)),
         };
         (slot, sub)
     }

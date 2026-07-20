@@ -32,12 +32,12 @@ impl<T: Value> Read<T> for State<T> {
         self.reader.get()
     }
 
-    fn watch<F: Fn(&T) + Send + Sync + 'static>(&self, f: F) -> &Self {
+    fn watch<F: FnMut(&T) + Send + Sync + 'static>(&self, f: F) -> &Self {
         self.reader.watch(f);
         self
     }
 
-    fn bind<F: Fn(&T) + Send + Sync + 'static>(&self, f: F) -> &Self {
+    fn bind<F: FnMut(&T) + Send + Sync + 'static>(&self, f: F) -> &Self {
         self.reader.bind(f);
         self
     }

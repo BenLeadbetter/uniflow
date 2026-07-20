@@ -166,12 +166,12 @@ impl<S: Value, A: Action, D: Deps> Read<S> for Store<S, A, D> {
         self.self_reader.get()
     }
 
-    fn watch<F: Fn(&S) + Send + Sync + 'static>(&self, f: F) -> &Self {
+    fn watch<F: FnMut(&S) + Send + Sync + 'static>(&self, f: F) -> &Self {
         self.self_reader.watch(f);
         self
     }
 
-    fn bind<F: Fn(&S) + Send + Sync + 'static>(&self, f: F) -> &Self {
+    fn bind<F: FnMut(&S) + Send + Sync + 'static>(&self, f: F) -> &Self {
         self.self_reader.bind(f);
         self
     }

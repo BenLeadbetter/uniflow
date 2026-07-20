@@ -23,7 +23,7 @@ impl<T: Value> Reader<T> {
     pub fn map<U, F>(&self, f: F) -> Reader<U>
     where
         U: Clone + PartialEq + Send + Sync + 'static,
-        F: Fn(T) -> U + Send + Sync + 'static,
+        F: FnMut(T) -> U + Send + Sync + 'static,
     {
         Reader::new(DerivedNode::new(self.node.clone(), f))
     }
@@ -34,17 +34,18 @@ impl<T: Value> Read<T> for Reader<T> {
         self.node.get()
     }
 
-    fn watch<F: Fn(&T) + Send + Sync + 'static>(&self, f: F) -> &Self {
+    fn watch<F: FnMut(&T) + Send + Sync + 'static>(&self, f: F) -> &Self {
         let (sub, weak) = Subscription::new();
         self.node.add_watcher(WatchSlot {
             alive: weak,
-            callback: Arc::new(f),
+            callback: Arc::new(Mutex::new(Box::new(f) as Box<dyn FnMut(&T) + Send + Sync>)),
         });
         self.connections.lock().unwrap().push(sub);
         self
     }
 
-    fn bind<F: Fn(&T) + Send + Sync + 'static>(&self, f: F) -> &Self {
+    fn bind<F: FnMut(&T) + Send + Sync + 'static>(&self, f: F) -> &Self {
+        let mut f = f;
         f(&self.get());
         self.watch(f)
     }
@@ -110,6 +111,7 @@ pub fn with<R: Merge>(readers: R) -> Reader<R::Combined> {
 mod tests {
     use super::*;
     use crate::node::SourceNode;
+    use crate::{Read, Write};
     use std::sync::{Arc, Mutex};
 
     fn source_reader<T: Value>(value: T) -> (Arc<SourceNode<T>>, Reader<T>) {
@@ -273,11 +275,31 @@ mod tests {
 
     #[test]
     fn vec_merge_many_sources() {
-        let sources: Vec<_> = (0..10).map(|i| source_reader(i)).collect();
+        let sources: Vec<_> = (0..10).map(source_reader).collect();
         let readers: Vec<_> = sources.iter().map(|(_, r)| r.clone()).collect();
         let combined = readers.merge();
         assert_eq!(combined.get(), (0..10).collect::<Vec<i32>>());
         sources[5].0.set(99);
         assert_eq!(combined.get()[5], 99);
+    }
+
+    #[test]
+    fn reader_with_mutable_callback() {
+        let init = 0u32;
+        let state = crate::State::new(init);
+        let duplicates = std::sync::Arc::<std::sync::atomic::AtomicU32>::default();
+        {
+            let mut cache = init;
+            let duplicates = duplicates.clone();
+            state.reader().map(move |value| {
+                if cache == value {
+                    duplicates.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                cache = value;
+                value
+            });
+        }
+        state.set(0);
+        assert_eq!(duplicates.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }

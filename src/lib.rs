@@ -51,8 +51,8 @@ impl<S: Value, A: Action, D: Deps, R: Fn(S, A) -> (S, Effect<A, D>) + Send + 'st
 
 pub trait Read<T: Value>: Send + Sync {
     fn get(&self) -> T;
-    fn watch<F: Fn(&T) + Send + Sync + 'static>(&self, f: F) -> &Self;
-    fn bind<F: Fn(&T) + Send + Sync + 'static>(&self, f: F) -> &Self;
+    fn watch<F: FnMut(&T) + Send + Sync + 'static>(&self, f: F) -> &Self;
+    fn bind<F: FnMut(&T) + Send + Sync + 'static>(&self, f: F) -> &Self;
     fn unbind(&self);
 }
 
