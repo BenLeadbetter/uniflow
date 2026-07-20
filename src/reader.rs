@@ -65,12 +65,12 @@ impl<T: Value> Clone for Reader<T> {
 
 // ── Merge trait ───────────────────────────────────────────────────────────────
 
-/// Implemented on tuples of [`Reader`]s. Merge the tuple into a single reader
-/// that yields the corresponding state tuple and updates whenever any source
-/// reader changes.
+/// Implemented on tuples and `Vec`s of [`Reader`]s. Merge into a single reader
+/// that yields the combined state and updates whenever any source reader changes.
 ///
-/// Implemented for tuples of 2–5 readers. Use [`with`] as a free-function
-/// shorthand.
+/// Tuples of 2–5 readers yield the corresponding tuple type; `Vec<Reader<T>>`
+/// yields `Vec<T>` (all sources must share the same type). Use [`with`] as a
+/// free-function shorthand.
 pub trait Merge {
     type Combined: Value;
     fn merge(self) -> Reader<Self::Combined>;
@@ -93,7 +93,15 @@ impl_merge!((A, a), (B, b), (C, c));
 impl_merge!((A, a), (B, b), (C, c), (D, d));
 impl_merge!((A, a), (B, b), (C, c), (D, d), (E, e));
 
-/// Combine a tuple of readers into a single reader. See [`Merge`].
+impl<T: Value> Merge for Vec<Reader<T>> {
+    type Combined = Vec<T>;
+    fn merge(self) -> Reader<Vec<T>> {
+        let nodes = self.into_iter().map(|r| r.node).collect();
+        Reader::new(MergeNode::<Vec<T>>::new(nodes))
+    }
+}
+
+/// Combine a tuple or `Vec` of readers into a single reader. See [`Merge`].
 pub fn with<R: Merge>(readers: R) -> Reader<R::Combined> {
     readers.merge()
 }
@@ -101,7 +109,6 @@ pub fn with<R: Merge>(readers: R) -> Reader<R::Combined> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Read;
     use crate::node::SourceNode;
     use std::sync::{Arc, Mutex};
 
@@ -235,5 +242,42 @@ mod tests {
         combined.watch(move |v| c.lock().unwrap().push(*v));
         s2.set(20);
         assert_eq!(*calls.lock().unwrap(), vec![(1, 20)]);
+    }
+
+    #[test]
+    fn vec_merge_initial_value() {
+        let (_, r1) = source_reader(1i32);
+        let (_, r2) = source_reader(2i32);
+        let (_, r3) = source_reader(3i32);
+        let combined = vec![r1, r2, r3].merge();
+        assert_eq!(combined.get(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn vec_merge_change_propagates() {
+        let (s1, r1) = source_reader(1i32);
+        let (_, r2) = source_reader(2i32);
+        let combined = vec![r1, r2].merge();
+        let calls = Arc::new(Mutex::new(vec![]));
+        let c = calls.clone();
+        combined.watch(move |v| c.lock().unwrap().push(v.clone()));
+        s1.set(10);
+        assert_eq!(*calls.lock().unwrap(), vec![vec![10, 2]]);
+    }
+
+    #[test]
+    fn vec_merge_empty() {
+        let combined: Reader<Vec<i32>> = Vec::<Reader<i32>>::new().merge();
+        assert_eq!(combined.get(), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn vec_merge_many_sources() {
+        let sources: Vec<_> = (0..10).map(|i| source_reader(i)).collect();
+        let readers: Vec<_> = sources.iter().map(|(_, r)| r.clone()).collect();
+        let combined = readers.merge();
+        assert_eq!(combined.get(), (0..10).collect::<Vec<i32>>());
+        sources[5].0.set(99);
+        assert_eq!(combined.get()[5], 99);
     }
 }

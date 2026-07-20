@@ -48,6 +48,20 @@ impl_merge_sources!((A, 0), (B, 1), (C, 2));
 impl_merge_sources!((A, 0), (B, 1), (C, 2), (D, 3));
 impl_merge_sources!((A, 0), (B, 1), (C, 2), (D, 3), (E, 4));
 
+impl<T: Value> MergeSources for Vec<T> {
+    type Sources = Vec<Arc<dyn ReadableNode<T>>>;
+
+    fn from_sources(sources: &Self::Sources) -> Self {
+        sources.iter().map(|s| s.get()).collect()
+    }
+
+    fn add_child_to_all(sources: &Self::Sources, child: Weak<dyn Propagate>) {
+        for source in sources {
+            source.add_child(child.clone());
+        }
+    }
+}
+
 // ── SourceNode ────────────────────────────────────────────────────────────────
 
 struct SourceNodeInner<T> {
