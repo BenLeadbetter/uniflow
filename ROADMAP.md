@@ -31,10 +31,10 @@ Standalone reactive read/write primitive:
 ### Reader ✅
 Read-only reactive view over any `ReadableNode`:
 - `reader.get()` — current value snapshot
-- `reader.watch(f)` — fire callback on each change
+- `reader.watch(f)` — fire `FnMut` callback on each change
 - `reader.bind(f)` — fire immediately, then watch
 - `reader.unbind()` — drop all subscriptions held by this reader
-- `reader.map(f)` — derive a new `Reader<U>` via `DerivedNode`
+- `reader.map(f)` — derive a new `Reader<U>` via `DerivedNode`; `f` may be `FnMut`
 - `with((r1, r2, ...))` / `Merge` trait — combine up to five readers into a tuple reader
 
 ### Effect ✅

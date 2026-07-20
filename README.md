@@ -144,7 +144,8 @@ fn main() {
 ```
 
 Several readers can be combined with `uniflow::with` to create a new,
-composed reader.
+composed reader. Tuples of 2–5 heterogeneous readers and `Vec<Reader<T>>`
+(homogeneous, any length) are both supported.
 
 ```rust
 use uniflow::{Read, Write};
@@ -303,6 +304,15 @@ fn main() {
     assert_eq!(store.get().result, Some(42));
 }
 ```
+
+Three additional constructors cover common patterns:
+
+- **`Effect::task(fut)`** — wraps a future that resolves to an action and dispatches it.
+  Equivalent to `Effect::new(|ctx| async { ctx.dispatch(fut.await); })`.
+- **`Effect::batch(effects)`** — runs a collection of effects concurrently as a single effect.
+- **`Effect::map(f)`** — lifts an `Effect<A>` into an `Effect<B>` by mapping dispatched
+  actions through `f: A -> B`. Useful for composing sub-system effects into a parent
+  action type.
 
 ### Middleware
 

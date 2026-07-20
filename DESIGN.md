@@ -96,6 +96,27 @@ fn reducer(state: AppState, action: Action) -> (AppState, Effect<Action>) {
 For stores without effects, the simpler `Reducer` signature (`fn(S, A) -> S`) is also
 accepted via `Store::new`.
 
+### Middleware
+
+The `StoreBuilder` wraps the reducer with zero or more middleware layers before
+building the store. Each layer sees the action first and decides whether to pass it
+to the inner reducer:
+
+```rust
+Store::builder(initial_state, reducer)
+    .wrap(|inner, state| {
+        (move |s, a| {
+            println!("action dispatched");
+            inner(s, a)
+        }, state)
+    })
+    .build();
+```
+
+Wraps are applied left-to-right: the first `.wrap` call produces the outermost layer
+dispatched actions encounter first. The `wrap` closure also receives the initial state
+so a middleware may transform the state type if needed.
+
 ### Dependency Injection
 
 Dependencies are injected at store creation and forwarded to effects via `Context`.
@@ -121,12 +142,29 @@ after the reducer runs; effects can dispatch further actions via their `Context`
 pub struct Effect<A: Action, D: Deps = ()> { /* async closure */ }
 
 impl<A: Action, D: Deps> Effect<A, D> {
+    /// Wraps an async closure that receives a `Context` and produces no output.
     pub fn new<F, Fut>(f: F) -> Self
     where
         F: FnOnce(Context<A, D>) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static;
 
+    /// No-op placeholder; produces no side effects.
     pub fn none() -> Self;
+
+    /// Wraps a future that resolves to an action, dispatching it when complete.
+    /// Shorthand for `Effect::new(|ctx| async { ctx.dispatch(fut.await); })`.
+    pub fn task<Fut>(fut: Fut) -> Self
+    where
+        Fut: Future<Output = A> + Send + 'static;
+
+    /// Runs all effects in `effects` concurrently. Returns `none()` if the
+    /// iterator is empty.
+    pub fn batch(effects: impl IntoIterator<Item = Self>) -> Self;
+
+    /// Lifts an `Effect<A, D>` into an `Effect<B, D>` by mapping each dispatched
+    /// action through `f: A -> B`. Useful for composing sub-system effects into
+    /// a parent action type.
+    pub fn map<B: Action>(self, f: impl Fn(A) -> B + Send + Sync + 'static) -> Effect<B, D>;
 }
 ```
 
@@ -163,11 +201,11 @@ compose a new closure around the parent without requiring a channel of type `Sen
 Uniflow's reactivity does not depend on any external reactive library.
 Instead it uses a small set of node types:
 
-| Node                   | Role                                                                                                                       |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `SourceNode<T>`        | Root value cell. `set(value)` updates and notifies watchers if the value changed (`PartialEq`).                            |
-| `DerivedNode<T>`       | Lazy cached projection. Recomputes when its upstream fires; notifies its own watchers only when the derived value changes. |
-| `MergeNode<(A,B,...)>` | Combines two–five upstream nodes into a tuple. Fires whenever any upstream changes.                                        |
+| Node                   | Role                                                                                                                           |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `SourceNode<T>`        | Root value cell. `set(value)` updates and notifies watchers if the value changed (`PartialEq`).                                |
+| `DerivedNode<T>`       | Lazy cached projection. Recomputes when its upstream fires; notifies its own watchers only when the derived value changes.     |
+| `MergeNode<(A,B,...)>` | Combines two–five upstream nodes into a tuple, or a `Vec` of same-typed nodes into `Vec<T>`. Fires whenever any upstream changes. |
 
 All nodes implement `ReadableNode<T>` (the internal trait), allowing `Reader<T>` to
 work uniformly across all of them.
@@ -178,19 +216,29 @@ Subscriptions use weak references (`Weak<()>` inside `WatchSlot`) so that droppi
 ## Store
 
 ```rust
+impl<S: Value, A: Action> Store<S, A, ()> {
+    // Simple constructors (no deps, no effects)
+    pub fn new<R: Reducer<S, A>>(state: S, reducer: R) -> Self;
+    pub fn new_with_capacity<R: Reducer<S, A>>(state: S, reducer: R, capacity: usize) -> Self;
+    pub fn new_with_effects<R: EffectReducer<S, A, ()>>(state: S, reducer: R) -> Self;
+
+    // Builder entry-points
+    pub fn builder<R: Reducer<S, A>>(state: S, reducer: R) -> StoreBuilder<S, A, ..., ()>;
+    pub fn builder_with_effects<R: EffectReducer<S, A, ()>>(state: S, reducer: R) -> StoreBuilder<S, A, R, ()>;
+}
+
 impl<S: Value, A: Action, D: Deps> Store<S, A, D> {
-    // Constructors
-    pub fn new<R: Reducer<S, A>>(state: S, reducer: R) -> Store<S, A, ()>;
-    pub fn new_with_capacity<R: Reducer<S, A>>(state: S, reducer: R, capacity: usize) -> Store<S, A, ()>;
+    // Constructors with deps / effects
     pub fn new_with_deps<R: EffectReducer<S, A, D>>(state: S, reducer: R, deps: D) -> Self;
     pub fn new_with_deps_and_capacity<R: EffectReducer<S, A, D>>(
         state: S, reducer: R, deps: D, capacity: usize,
     ) -> Self;
+    pub fn builder_with_deps<R: EffectReducer<S, A, D>>(state: S, reducer: R, deps: D) -> StoreBuilder<S, A, R, D>;
 
     // State access (also impl Read<S>)
     pub fn get(&self) -> S;
-    pub fn watch<F: Fn(&S) + Send + Sync + 'static>(&self, f: F) -> &Self;
-    pub fn bind<F: Fn(&S) + Send + Sync + 'static>(&self, f: F) -> &Self;
+    pub fn watch<F: FnMut(&S) + Send + Sync + 'static>(&self, f: F) -> &Self;
+    pub fn bind<F: FnMut(&S) + Send + Sync + 'static>(&self, f: F) -> &Self;
     pub fn unbind(&self);
 
     // Derived readers
@@ -203,6 +251,19 @@ impl<S: Value, A: Action, D: Deps> Store<S, A, D> {
     // Lifecycle
     pub fn dispatch(&self, action: A);   // also impl Dispatch<A>
     pub fn shutdown(&self);
+}
+
+pub struct StoreBuilder<S, A, R, D = ()> { /* ... */ }
+
+impl<S: Value, A: Action, D: Deps, R: EffectReducer<S, A, D>> StoreBuilder<S, A, R, D> {
+    /// Wraps the current reducer with a middleware. See [`Middleware`] section above.
+    pub fn wrap<T, B, R2, F>(self, f: F) -> StoreBuilder<T, B, R2, D>
+    where
+        T: Value, B: Action, R2: EffectReducer<T, B, D>,
+        F: FnOnce(R, S) -> (R2, T);
+
+    pub fn with_capacity(self, capacity: usize) -> Self;
+    pub fn build(self) -> Store<S, A, D>;
 }
 ```
 
@@ -308,7 +369,6 @@ futures     = "0.3"
 
 ## Future Features
 
-- **Middleware** — action interception before the reducer (logging, analytics, dev tools)
 - **Lens-based zoom** — composable readers focused on state subsets
 - **Cursor** — bidirectional read/write access for form bindings
 - **Transducer-style transforms** — chainable `map`, `filter`, `dedupe` on readers
