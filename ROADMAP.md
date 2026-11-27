@@ -46,6 +46,13 @@ Read-only reactive view over any `ReadableNode`:
 - `reader.map(f)` — derive a new `Reader<U>` via `DerivedNode`; `f` may be `FnMut`
 - `with((r1, r2, ...))` / `Merge` trait — combine up to five readers into a tuple reader
 
+### Lens-Based Zoom ✅
+
+- `Lens<W>` trait with `view` / `set`, composed with `LensExt::then`
+- `reader.zoom(lens)` — derive a reader of the focused part via `DerivedNode`
+- `field!(T, path)` → `FieldLens`, `lens::at(key)` → `IndexLens`,
+  `variant!(Enum::Variant)` → `EnumLens`, `lens::getset(get, set)` → `GetSet`
+
 ### Effect ✅
 
 Async side effects returned alongside new state from the reducer:
@@ -104,11 +111,13 @@ Spawned in `Store::new()` via `any_spawner::Executor::spawn`:
 
 Features for future consideration, roughly ordered by utility:
 
-### Lens-Based Zoom
+### Writable Zoom (Cursors)
 
-- Composable readers focused on state subsets
-- `reader.zoom(lens)` for nested access
-- Type-safe path into deep state structures
+- `state.zoom(lens)` returning a read/write cursor over the focused part
+- Cursor node that writes back through `Lens::set` (see DESIGN.md, "Writable zoom")
+- Option combinators for composing partial lenses (lager's `map_opt`, `bind_opt`,
+  `value_or`)
+- `#[derive(Lenses)]` and struct/multi-field variant support for `variant!`
 
 ### Custom Scheduler Integration
 
