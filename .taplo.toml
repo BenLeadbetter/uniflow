@@ -1,0 +1,7 @@
+# TOML formatting, applied by the taplo pre-commit hook. Matches rustfmt's
+# indent and width so Cargo.toml reads like the Rust beside it.
+[formatting]
+indent_string = "    "
+column_width = 100
+# NOTE: keep multi-line arrays (like the workspace `members`) as written.
+array_auto_collapse = false

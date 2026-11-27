@@ -1,37 +1,61 @@
+# Git hooks, run by pre-commit (https://pre-commit.com). The Nix dev shell installs
+# them; `just install-hooks` does so by hand. See CONTRIBUTING.md.
+# NOTE: a hook without `stages` would run at every installed stage, including
+# commit-msg, against the message file. Default to commit time, and opt the hooks
+# that make sense on a message into commit-msg explicitly. trailing-whitespace is
+# not one: git already strips it from messages, and a fixer that reports a change
+# aborts the commit.
+default_stages: [pre-commit]
 repos:
-- repo: https://github.com/AndrejOrsula/pre-commit-cargo.git
-  rev: 0.5.0
-  hooks:
-  - id: cargo-fmt
-    stages: [pre-commit]
-- repo: https://github.com/compilerla/conventional-pre-commit
-  rev: v4.3.0
-  hooks:
-  - id: conventional-pre-commit
-    stages: [commit-msg]
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v6.0.0
   hooks:
   - id: check-added-large-files
-    stages: [pre-commit]
   - id: check-case-conflict
-    stages: [pre-commit]
+  - id: check-executables-have-shebangs
   - id: check-merge-conflict
-    stages: [pre-commit]
+  - id: check-shebang-scripts-are-executable
+    # NOTE: a Rust inner attribute on the first line (`#![doc = ...]` in lib.rs)
+    # reads as a shebang.
+    exclude: \.rs$
+  - id: check-symlinks
   - id: check-toml
-    stages: [pre-commit]
+  - id: check-yaml
   - id: detect-private-key
-    stages: [pre-commit]
+  - id: end-of-file-fixer
   - id: mixed-line-ending
-    stages: [pre-commit]
+    args: [--fix=lf]
+  - id: trailing-whitespace
+    args: [--markdown-linebreak-ext=md]
+- repo: https://github.com/AndrejOrsula/pre-commit-cargo.git
+  rev: 0.5.0
+  hooks:
+  - id: cargo-fmt
+# NOTE: Prettier rather than mdformat, which renumbers ordered lists and rewrites
+# `---` rules.
+- repo: local
+  hooks:
+  - id: prettier-markdown
+    name: prettier (markdown)
+    language: node
+    additional_dependencies: [prettier@3.9.10]
+    entry: prettier --write --ignore-unknown
+    types: [markdown]
+- repo: https://github.com/ComPWA/taplo-pre-commit
+  rev: v0.9.3
+  hooks:
+  - id: taplo-format
 - repo: https://github.com/codespell-project/codespell
-  rev: v2.4.1
+  rev: v2.4.3
   hooks:
   - id: codespell
+    # NOTE: `-w` applies the fixes. Words codespell gets wrong for this repo
+    # (crate names, Rust idiom) go in codespell-ignore, one per line, lowercase.
     args: [-I, codespell-ignore, -w]
-ci:
-  autofix_commit_msg: |
-      ci: [pre-commit.ci] auto fixes from pre-commit.com hooks
-
-      for more information, see https://pre-commit.ci
-  autoupdate_commit_msg: 'ci: [pre-commit.ci] pre-commit autoupdate'
+    exclude: \.lock$
+    stages: [pre-commit, commit-msg]
+- repo: https://github.com/compilerla/conventional-pre-commit
+  rev: v4.5.0
+  hooks:
+  - id: conventional-pre-commit
+    stages: [commit-msg]
