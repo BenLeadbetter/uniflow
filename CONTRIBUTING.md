@@ -64,3 +64,10 @@ There are two hooks:
 The formatters rewrite files in place. When a hook changes something, the commit stops:
 look at the changes, stage them and commit again. `just check` runs every hook over the
 whole repo, and `just uninstall-hooks` removes them.
+
+## Continuous integration
+
+[The Rust workflow](.github/workflows/rust.yml) runs on every push to `main` and every pull
+request. It runs `cargo test` on the latest Ubuntu, macOS and Windows runners, and checks
+`cargo fmt` and `cargo clippy` (with warnings as errors) on Ubuntu. `just test` and
+`just lint` run the same checks locally.

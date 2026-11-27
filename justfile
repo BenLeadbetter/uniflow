@@ -7,9 +7,10 @@ default:
 test:
     cargo test --all-features
 
-# Run clippy over every target
+# Check formatting and run clippy over every target, as CI does
 lint:
-    cargo clippy --all-targets --all-features
+    cargo fmt --all --check
+    cargo clippy --all-targets --all-features -- -D warnings
 
 # Run an example; e.g. `just run-example counter`
 run-example name *args:
