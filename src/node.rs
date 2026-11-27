@@ -14,9 +14,11 @@ pub(crate) trait ReadableNode<T: Value>: Send + Sync {
     fn add_child(&self, child: Weak<dyn Propagate>);
 }
 
+pub(crate) type Callback<T> = Box<dyn FnMut(&T) + Send + Sync>;
+
 pub(crate) struct WatchSlot<T> {
     pub(crate) alive: Weak<()>,
-    pub(crate) callback: Arc<Mutex<Box<dyn FnMut(&T) + Send + Sync>>>,
+    pub(crate) callback: Arc<Mutex<Callback<T>>>,
 }
 
 // ── Merge trait ───────────────────────────────────────────────────────────────
@@ -382,7 +384,7 @@ mod tests {
             callback: Arc::new(Mutex::new(Box::new(move |v: &T| {
                 received.lock().unwrap().push(v.clone())
             })
-                as Box<dyn FnMut(&T) + Send + Sync>)),
+                as Callback<T>)),
         };
         (slot, sub)
     }

@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use crate::node::{DerivedNode, MergeNode, ReadableNode, WatchSlot};
+use crate::node::{Callback, DerivedNode, MergeNode, ReadableNode, WatchSlot};
 use crate::subscription::Subscription;
 use crate::{Read, Value};
 
@@ -38,7 +38,7 @@ impl<T: Value> Read<T> for Reader<T> {
         let (sub, weak) = Subscription::new();
         self.node.add_watcher(WatchSlot {
             alive: weak,
-            callback: Arc::new(Mutex::new(Box::new(f) as Box<dyn FnMut(&T) + Send + Sync>)),
+            callback: Arc::new(Mutex::new(Box::new(f) as Callback<T>)),
         });
         self.connections.lock().unwrap().push(sub);
         self
