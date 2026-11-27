@@ -168,10 +168,10 @@ fn main() {
         let height = state.reader().map(|s: Rect| s.height);
         let map_recomputed = recomputed.clone();
         (
-            uniflow::with((width, height)).map(move |(width, height)| { 
+            uniflow::with((width, height)).map(move |(width, height)| {
                 map_recomputed.fetch_add(1, Ordering::Relaxed);
                 width * height
-            }), 
+            }),
             recomputed,
         )
     };

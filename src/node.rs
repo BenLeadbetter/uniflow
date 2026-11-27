@@ -383,8 +383,7 @@ mod tests {
             alive: weak,
             callback: Arc::new(Mutex::new(Box::new(move |v: &T| {
                 received.lock().unwrap().push(v.clone())
-            })
-                as Callback<T>)),
+            }) as Callback<T>)),
         };
         (slot, sub)
     }
