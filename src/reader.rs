@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::node::{Callback, DerivedNode, MergeNode, ReadableNode, WatchSlot};
 use crate::subscription::Subscription;
-use crate::{Read, Value};
+use crate::{Lens, Read, Value};
 
 pub struct Reader<T>
 where
@@ -26,6 +26,15 @@ impl<T: Value> Reader<T> {
         F: FnMut(T) -> U + Send + Sync + 'static,
     {
         Reader::new(DerivedNode::new(self.node.clone(), f))
+    }
+
+    /// Returns a reader of the part of this reader's value that `lens` focuses on.
+    ///
+    /// The zoomed reader only notifies its watchers when the focused part changes.
+    pub fn zoom<L: Lens<T>>(&self, lens: L) -> Reader<L::Part> {
+        // NOTE: a read-only zoom is a map of the lens's view, so it reuses `DerivedNode`.
+        // A writable zoom (cursor) will need its own node, which writes back through `Lens::set`.
+        self.map(move |whole| lens.view(&whole))
     }
 }
 
@@ -212,6 +221,73 @@ mod tests {
         mapped.watch(move |v| c.lock().unwrap().push(*v));
         source.set(5);
         assert_eq!(*calls.lock().unwrap(), vec![50]);
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct Record {
+        age: u32,
+        tags: Vec<String>,
+    }
+
+    fn record_reader() -> (Arc<SourceNode<Record>>, Reader<Record>) {
+        source_reader(Record {
+            age: 33,
+            tags: vec!["judge".into()],
+        })
+    }
+
+    #[test]
+    fn zoom_reads_focused_part() {
+        let (_, reader) = record_reader();
+        assert_eq!(reader.zoom(crate::field!(Record, age)).get(), 33);
+    }
+
+    #[test]
+    fn zoom_follows_source_changes() {
+        let (source, reader) = record_reader();
+        let age = reader.zoom(crate::field!(Record, age));
+        source.set(Record {
+            age: 34,
+            ..source.get()
+        });
+        assert_eq!(age.get(), 34);
+    }
+
+    #[test]
+    fn zoom_skips_changes_outside_focus() {
+        let (source, reader) = record_reader();
+        let age = reader.zoom(crate::field!(Record, age));
+        let calls = Arc::new(Mutex::new(vec![]));
+        let c = calls.clone();
+        age.watch(move |v| c.lock().unwrap().push(*v));
+        source.set(Record {
+            tags: vec![],
+            ..source.get()
+        });
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn zoom_composed_partial_lens() {
+        use crate::lens::{LensExt, at};
+
+        let (source, reader) = record_reader();
+        let second_tag = reader.zoom(crate::field!(Record, tags).then(at(1)));
+        assert_eq!(second_tag.get(), None);
+        source.set(Record {
+            tags: vec!["judge".into(), "mega".into()],
+            ..source.get()
+        });
+        assert_eq!(second_tag.get(), Some("mega".into()));
+    }
+
+    #[test]
+    fn zoom_chains() {
+        let (_, reader) = record_reader();
+        let first_tag = reader
+            .zoom(crate::field!(Record, tags))
+            .zoom(crate::lens::at(0));
+        assert_eq!(first_tag.get(), Some("judge".into()));
     }
 
     #[test]

@@ -4,6 +4,7 @@ use futures::channel::mpsc::TrySendError;
 use futures::future::BoxFuture;
 use std::sync::Arc;
 
+pub mod lens;
 mod node;
 mod reader;
 mod state;
@@ -16,11 +17,13 @@ pub mod manual_spawner;
 mod executor;
 
 pub use any_spawner;
+pub use lens::Lens;
 pub use reader::{Merge, Reader, with};
 pub use state::State;
 pub use store::{Store, StoreBuilder};
 
 pub mod prelude {
+    pub use crate::lens::LensExt;
     pub use crate::{Dispatch, Read, ReadWrite, Write};
 }
 

@@ -118,7 +118,7 @@ fn main() {
     let state = uniflow::State::new(Record { age: 33, name: "Dredd".into() });
 
     // zoom into just the age field
-    let age = state.reader().map(|s: Record| s.age);
+    let age = state.reader().zoom(uniflow::field!(Record, age));
 
     // pull the current value from the reader at any time
     assert_eq!(age.get(), 33);

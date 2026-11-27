@@ -213,6 +213,61 @@ work uniformly across all of them.
 Subscriptions use weak references (`Weak<()>` inside `WatchSlot`) so that dropping a
 `Reader` or `State` automatically removes its watchers without any explicit deregistration.
 
+## Lenses
+
+A lens is a bidirectional focus on one part of a larger value, modelled on
+[lager's lenses](https://github.com/arximboldi/lager/tree/master/lager/lenses):
+
+```rust
+pub trait Lens<W>: Send + Sync + 'static {
+    type Part: Value;
+    fn view(&self, whole: &W) -> Self::Part;
+    fn set(&self, whole: W, part: Self::Part) -> W;
+}
+```
+
+`reader.zoom(lens)` derives a `Reader<L::Part>` that notifies only when the focused
+part changes. The library provides:
+
+| Lens                 | Built with                       | Part           | Focus                                                                                                 |
+| -------------------- | -------------------------------- | -------------- | ----------------------------------------------------------------------------------------------------- |
+| `FieldLens<W, P>`    | `field!(Person, address.street)` | `P`            | A struct field, possibly nested or a tuple index                                                      |
+| `IndexLens<K>`       | `lens::at(key)`                  | `Option<Item>` | An element of an `Indexed` container (`Vec`, `[T; N]`, `Box<[T]>`, `VecDeque`, `HashMap`, `BTreeMap`) |
+| `EnumLens<W, P>`     | `variant!(Shape::Circle)`        | `Option<P>`    | The payload of a single-field tuple variant                                                           |
+| `GetSet<W, P, G, S>` | `lens::getset(get, set)`         | `P`            | Anything a getter and setter can describe                                                             |
+
+Lenses compose with `LensExt::then`, and `LensExt::over` applies a function to the
+focused part. Partial lenses (`IndexLens`, `EnumLens`) never insert, remove or switch
+variants: setting `None`, or setting a missing element, leaves the whole unchanged.
+
+### Differences from lager
+
+- **Concrete lenses, not van Laarhoven.** A lager lens is a function
+  `(Part -> F<Part>) -> (Whole -> F<Whole>)` generic over any functor `F`; `view` and
+  `set` run it with a const and an identity functor. Rust can't abstract over `F`
+  (no higher-kinded types) or write generic closures, so uniflow stores the
+  `view`/`set` pair directly. The two are equivalent for `view`, `set` and `over`.
+- **No member pointers.** `field!` and `variant!` expand to non-capturing accessor
+  closures that coerce to `fn` pointers, so `FieldLens` and `EnumLens` are nameable,
+  `Copy` types with no runtime cost.
+
+### Lenses, transducers and the node graph
+
+Lenses are not transducers. A transducer transforms a stream of values and may drop
+or emit several values per input; a lens focuses on exactly one part per whole and
+can put a part back. lager keeps them in separate node kinds (`lens_reader_node`,
+`xform_reader_node`), though both compose with `zug::comp`. They meet in the read
+direction: a read-only zoom is a map of the lens's `view`, so `Reader::zoom` reuses
+`DerivedNode`. A future `transducers` module can generalise `DerivedNode`'s selector
+into a transducer without changing `Lens`.
+
+### Writable zoom (cursors)
+
+`Lens::set` is unused by `Reader::zoom`. It exists for a writable zoom such as
+`state.zoom(lens) -> Cursor<Part>`, mirroring lager's `lens_cursor_node`: a cursor
+node whose writes read the parent's current whole, apply `Lens::set`, and send the
+new whole up to the source. This is planned for a later iteration.
+
 ## Store
 
 ```rust
@@ -369,8 +424,8 @@ futures     = "0.3"
 
 ## Future Features
 
-- **Lens-based zoom** — composable readers focused on state subsets
-- **Cursor** — bidirectional read/write access for form bindings
+- **Cursor** — bidirectional read/write access for form bindings, including writable
+  zoom through `Lens::set` (see [Writable zoom](#writable-zoom-cursors))
 - **Transducer-style transforms** — chainable `map`, `filter`, `dedupe` on readers
 - **Batched updates** — coalesce multiple dispatches into a single state update
 - **Time-travel debugging** — record and replay action history
